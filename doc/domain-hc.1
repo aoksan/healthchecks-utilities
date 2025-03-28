@@ -1,0 +1,41 @@
+.\" Man page for domain-hc
+.TH DOMAIN-HC 1 "2025-03-28" "healthchecks-utilities" "User Commands"
+.SH NAME
+domain-hc \- directory of healthchecks utilities scripts
+.SH DESCRIPTION
+Directory containing scripts and related files for domain health checks.
+.SH FILES
+.TP
+run_check_domains.bash
+Script to check domain availability/status and ping Healthchecks.io.
+.TP
+run_create_domain_check.bash
+Script to create new Healthchecks for each domain listed in domains.txt.
+.TP
+run_remove_unused.bash
+Script to delete Healthchecks not referenced in domains.txt and remove their entries.
+.TP
+run_remove_all.bash
+Script to delete all Healthchecks and strip all non-comment entries from domains.txt.
+.TP
+debug_list_checks.bash
+Script to list all Healthchecks via Healthchecks API.
+.TP
+debug_delete_marker.bash
+Script to clear weekly expiry-check marker files.
+.TP
+domains.txt
+List of domains (with status and optional expiry UUIDs) to be checked.
+.TP
+helper_load_env.bash
+Loads required environment variables from .env file.
+    API_KEY
+    API_URL
+    HC_BASE
+    DOMAINS_FILE
+.TP
+helper_log.bash
+Logging helper functions (info, debug, error).
+.TP
+logs.log
+Log file capturing all output.
