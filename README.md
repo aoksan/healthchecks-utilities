@@ -5,14 +5,16 @@ This repository provides a modular set of Bash scripts for managing domain uptim
 The project is organized into:
 
 - `domain-hc/`: Tools for checking domains, creating or cleaning up Healthchecks, and tracking expiry.
-- `doc/`: Manual files for command-line documentation.
-- `another-hc/`: Placeholder for future healthcheck-related modules.
+- `doc/`: Manual files for command-line documentation. (WORKING)
 
-Each domain is tracked via a central `domains.txt` file with assigned Healthcheck UUIDs for status and optional expiry.
+Each domain is tracked via a central `domains.txt` file, where each line includes a status UUID and optionally an expiry UUID. These UUIDs correspond to individual checks on Healthchecks.io and are actively pinged or logged depending on domain availability and WHOIS expiry data.
 
-Environment variables, logging, and WHOIS integration are supported out of the box.
+The scripts are built to work together, using shared helper files for things like logging and environment setup. WHOIS checks, expiry markers, and Healthchecks API interactions are reused across scripts.
 
-Refer to `domain-hc/README.md` and `doc/domain-hc.1` for detailed usage.
+Since this project was written with the help of ChatGPT, it’s a bit experimental—you might run into small bugs or quirks, especially with unusual domain setups. Feel free to tweak things as needed.
+
+Refer to `doc/domain-hc.1` for detailed usage. (WORKING)
+
 
 ## Reference
 
