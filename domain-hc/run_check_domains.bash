@@ -23,7 +23,7 @@ while read -r domain status_field expiry_field; do
 
   ### Website Status Check
   # Retrieve HTTP status code using HTTPS with a 10-second timeout.
-  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://$domain" || echo "000")
+  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -L "https://$domain" || echo "000")
   if [[ "$status" =~ ^2 ]]; then
     curl -s "${BASE_URL}/${status_uuid}" >/dev/null
     info "  ✓ Status: up (HTTP $status)"
