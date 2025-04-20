@@ -1,0 +1,760 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import datetime
+import json
+import requests
+import re
+import argparse
+from dotenv import load_dotenv
+
+load_dotenv() # Loads environment variables from .env file
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) # Get script directory
+
+# --- Configuration (can be loaded from .env or command-line arguments) ---
+API_URL = os.getenv("API_URL", "https://healthchecks.io/api/v3/")
+API_KEY = os.getenv("API_KEY")
+BASE_URL = os.getenv("BASE_URL", "https://hc-ping.com")
+DOMAIN_FILE = os.getenv("DOMAIN_FILE", os.path.join(SCRIPT_DIR, "domains.txt"))
+# Use script directory as a base path for domains.txt if not specified in environment
+
+# Simple validation for API_KEY
+if not API_KEY:
+    print("ERROR: API_KEY environment variable not set. Please set it or create a .env file.")
+    exit(1)
+
+# --- Helper Functions ---
+def log(level, message):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] [{level}] {message}"
+    print(log_line)
+    try:
+        log_file = os.path.join(SCRIPT_DIR, "logs.log")
+        with open(log_file, "a") as f:
+            f.write(log_line + "\n")
+    except IOError as e:
+        print(f"Warning: Could not write to log file: {e}")
+
+def info(message):  log("INFO", message)
+def debug(message): log("DEBUG", message) # Consider adding a verbose flag to enable/disable debug logs
+def warn(message):  log("WARN", message)
+def error(message): log("ERROR", message)
+
+def _make_api_request(method, endpoint, data=None, params=None):
+    """Helper function for making API requests."""
+    headers = {'X-Api-Key': API_KEY, 'Content-Type': 'application/json'}
+    url = f"{API_URL.rstrip('/')}/{endpoint.lstrip('/')}"
+    try:
+        response = requests.request(method, url, headers=headers, json=data, params=params, timeout=15)
+        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+
+        if method.upper() == 'DELETE':
+            # Success for DELETE could be 204 No Content OR 200 OK with body
+            if response.status_code == 204 or response.status_code == 200:
+                # Check if there *is* content before trying to parse JSON
+                if response.content:
+                    try:
+                        # Return the body if present (might be the deleted object)
+                        # Or return a simple success indicator if parsing fails, but the status is ok
+                        return response.json()
+                    except json.JSONDecodeError:
+                        debug(f"DELETE successful ({response.status_code}) but response body was not valid JSON for {url}")
+                        return {"status": "success", "code": response.status_code} # Indicate success
+                else:
+                    # No content, typical 204 success
+                    return None # Indicate success with no content
+            else:
+                # This case should be caught by raise_for_status, but safety check
+                error(f"DELETE request failed with status code {response.status_code} for {url}")
+                return None # Indicate failure explicitly
+
+        # --- Handle GET/POST/PUT etc. ---
+        # Check for empty content even for non-DELETE success codes if needed
+        if not response.content:
+            debug(f"Request successful ({response.status_code}) but no content returned for {method} {url}")
+            # Decide what to return - None or an empty dict? None might be cleaner.
+            return None
+        # Try to parse JSON for other successful requests
+        return response.json()
+
+    except requests.exceptions.Timeout:
+        error(f"API request timed out: {method} {url}")
+    except requests.exceptions.RequestException as e:
+        error(f"API request error: {method} {url} - {e}")
+        if e.response is not None:
+            error(f"API Response ({e.response.status_code}): {e.response.text}")
+    return None # Indicate failure on exceptions
+
+def create_healthcheck(domain, check_type):
+    """Creates a status or expiry healthcheck for a given domain."""
+    slug = re.sub(r'[^a-z0-9]+', '-', domain.lower()) # Generate a safe slug
+    data = {
+        'name': domain,
+        'slug': f'{slug}-{check_type}',
+        'unique': ['slug'], # Ensure slug uniqueness
+        'tags': check_type, # Use single string (e.g., "status" or "expiry")
+    }
+    if check_type == 'status':
+        data['tz'] = 'Europe/Istanbul'
+        data['schedule'] = '*/5 * * * *' # 5-minute interval
+        data['grace'] = 60  # 1-minute grace
+    elif check_type == 'expiry':
+        data['timeout'] = 3600 * 24 * 7 # 7-day timeout
+        data['grace'] = 3600 * 24 # 1-day grace
+
+    response_data = _make_api_request('POST', 'checks/', data=data)
+
+    # --- Enhanced UUID Extraction ---
+    if response_data:
+        # Preferentially use the 'update_url' or 'ping_url' to extract UUID if present
+        uuid = None
+        for url_key in ['update_url', 'ping_url']:
+            url_val = response_data.get(url_key)
+            if url_val:
+                match = re.search(r'/([a-f0-9-]+)(?:/|$)', url_val) # Look for UUID in the path
+                if match:
+                    uuid = match.group(1)
+                    break # Found UUID
+
+        if uuid:
+            info(f"Successfully created {check_type} check for {domain} with UUID: {uuid}")
+            return uuid
+        else:
+            # Fallback or error if UUID couldn't be extracted
+            error(f"Could not extract UUID from successful API response for {check_type} check for {domain}. Response: {response_data}")
+            return None
+    else:
+        # Error already logged by _make_api_request
+        # error(f"Failed to create {check_type} check for {domain}. API response: {response_data}") # Redundant logging
+        return None # API call failed or didn't return expected data
+
+def load_domains_raw():
+    """Loads raw lines and comments/blanks from the domain file."""
+    lines_data = []
+    try:
+        with open(DOMAIN_FILE, 'r') as f:
+            for idx, line in enumerate(f):
+                lines_data.append({'line_num': idx + 1, 'raw_line': line.strip()})
+    except FileNotFoundError:
+        warn(f"Domains file '{DOMAIN_FILE}' not found.")
+    except IOError:
+        error(f"Could not read domains file '{DOMAIN_FILE}'.")
+    return lines_data
+
+def action_create_domain_checks():
+    """
+    Reads the domain file, creates missing healthchecks (status for all, expiry only for non-subdomains),
+    and rewrites the file with updated info.
+    """
+    info("Starting: Create Domain Checks")
+    raw_lines_data = load_domains_raw()
+    if not raw_lines_data:
+        info("Domain file is empty or not found. Nothing to create.")
+        return
+
+    processed_domains = [] # Store results for rewriting the file
+    updated = False # Flag to track if any changes were made
+
+    for line_data in raw_lines_data:
+        line_num = line_data['line_num']
+        original_line = line_data['raw_line']
+
+        # Preserve comments and blank lines
+        if not original_line or original_line.startswith('#'):
+            processed_domains.append({'type': 'comment_or_blank', 'content': original_line})
+            continue
+
+        # Try parsing the line
+        parts = original_line.split()
+        domain = parts[0]
+        current_status_uuid = None
+        current_expiry_uuid = None
+
+        if len(parts) < 1: # Should not happen if not blank/comment, but safety checks
+            warn(f"Skipping malformed line {line_num}: '{original_line}'")
+            processed_domains.append({'type': 'comment_or_blank', 'content': f"# Skipped malformed line: {original_line}"})
+            continue
+
+        # Extract existing UUIDs if present
+        for part in parts[1:]:
+            if part.startswith('s:'):
+                current_status_uuid = part.split(':', 1)[1]
+            elif part.startswith('e:'):
+                current_expiry_uuid = part.split(':', 1)[1]
+
+        # --- Create missing STATUS check (always attempt if missing) ---
+        new_status_uuid = None
+        if not current_status_uuid:
+            warn(f"Domain '{domain}' (line {line_num}) is missing status UUID. Creating...")
+            new_status_uuid = create_healthcheck(domain, 'status')
+            if new_status_uuid:
+                current_status_uuid = new_status_uuid # Update with the new UUID
+                updated = True
+            else:
+                warn(f"Failed to create status check for '{domain}'. It will remain without a status UUID in the file.")
+
+        # --- Create missing EXPIRY check (only if needed AND not a subdomain) ---
+        new_expiry_uuid = None
+        if not current_expiry_uuid:
+            # Determine if it's a subdomain (adjust the dot count threshold if needed)
+            is_subdomain = domain.count('.') > 1 # More than 2 dots
+
+            if is_subdomain:
+                info(f"Skipping EXPIRY check creation for apparent subdomain: {domain} (line {line_num})")
+                # Ensure current_expiry_uuid remains None or empty
+                current_expiry_uuid = None
+            elif current_status_uuid: # Only create expiry if status is present (newly created or existing)
+                warn(f"Domain '{domain}' (line {line_num}) is missing expiry UUID and is not a subdomain. Creating...")
+                new_expiry_uuid = create_healthcheck(domain, 'expiry')
+                if new_expiry_uuid:
+                    current_expiry_uuid = new_expiry_uuid # Update with the new UUID
+                    updated = True
+                else:
+                    warn(f"Failed to create expiry check for '{domain}'. It will remain without an expiry UUID.")
+            else:
+                # Status check creation failed or was missing, so don't create expiry either
+                warn(f"Skipping expiry check creation for '{domain}' because status check creation failed or was missing.")
+                current_expiry_uuid = None
+
+
+        # Store the final state for this domain for rewriting
+        processed_domains.append({
+            'type': 'domain',
+            'domain': domain,
+            'status_uuid': current_status_uuid,
+            'expiry_uuid': current_expiry_uuid # This will be None if skipped/failed
+        })
+
+    # --- Rewrite the entire domain file ---
+    if updated:
+        info(f"Rewriting {DOMAIN_FILE} with updated UUIDs...")
+        try:
+            with open(DOMAIN_FILE, 'w') as outfile:
+                for entry in processed_domains:
+                    if entry['type'] == 'comment_or_blank':
+                        outfile.write(entry['content'] + "\n")
+                    elif entry['type'] == 'domain':
+                        line_parts = [entry['domain']]
+                        # Only add s: if status_uuid exists
+                        if entry['status_uuid']:
+                            line_parts.append(f"s:{entry['status_uuid']}")
+                        else:
+                            warn(f"Note: Domain '{entry['domain']}' ended up without a status UUID in the final output.")
+                        # Only add e: if expiry_uuid exists
+                        if entry['expiry_uuid']:
+                            line_parts.append(f"e:{entry['expiry_uuid']}")
+                        outfile.write(" ".join(line_parts) + "\n")
+            info(f"Successfully rewrote {DOMAIN_FILE}.")
+        except IOError as e:
+            error(f"Failed to rewrite {DOMAIN_FILE}: {e}")
+            error("Please check file permissions and disk space.")
+            error("Original file might be unchanged, or partially written.")
+    else:
+        info("No new UUIDs were successfully created or file structure changes needed. Domain file remains unchanged.")
+
+    info("Finished: Create Domain Checks")
+
+
+# --- Other action_ functions (check_domains, remove_unused, etc.) ---
+# Need to be reviewed to ensure they use the corrected load_domains or handle
+# potential missing UUIDs gracefully if create failed previously.
+# For now, assuming they work with the output of the corrected load_domains.
+
+# --- load_domains (keep the original one for other commands) ---
+def load_domains():
+    """Loads domain configurations from the DOMAIN_FILE, skipping invalid."""
+    domains = []
+    try:
+        with open(DOMAIN_FILE, 'r') as f:
+            for idx, line in enumerate(f):
+                line_num = idx + 1
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    parts = line.split()
+                    # --- Change: Require at least domain and s:uuid ---
+                    if len(parts) >= 2 and any(p.startswith('s:') for p in parts):
+                        domain = parts[0]
+                        status_uuid = None
+                        expiry_uuid = None
+                        for part in parts[1:]:
+                            if part.startswith('s:'):
+                                status_uuid = part.split(':', 1)[1]
+                            elif part.startswith('e:'):
+                                expiry_uuid = part.split(':', 1)[1]
+
+                        # If status_uuid is somehow still None after check above, something is wrong
+                        if not status_uuid:
+                             warn(f"Internal inconsistency on line {line_num} parsing: '{line}'. Skipping.")
+                             continue
+
+                        domains.append({'domain': domain, 'status_uuid': status_uuid, 'expiry_uuid': expiry_uuid or ""})
+                    else:
+                         # Warn if the line has content but not the required s:uuid
+                         warn(f"Skipping invalid line {line_num}: '{line}' in {DOMAIN_FILE}. Expected format: domain s:<uuid> [e:<uuid>]")
+
+    except FileNotFoundError:
+        warn(f"Domains file '{DOMAIN_FILE}' not found. No domains loaded.")
+    except IOError as e:
+        error(f"Could not read domains file '{DOMAIN_FILE}': {e}")
+    return domains
+
+
+
+def check_domain_status(domain, status_uuid):
+    """Checks website status and pings the status healthcheck."""
+    info(f"Checking status for {domain}...")
+    try:
+        response = requests.get(f"https://{domain}", timeout=10, allow_redirects=True, verify=True, headers={'User-Agent': 'domain-hc-script/1.0'})
+        status_code = response.status_code
+        if 200 <= status_code < 400:
+            ping_healthcheck(status_uuid)
+            info(f"  ✓ Status: up (HTTP {status_code})")
+        else:
+            ping_healthcheck(status_uuid, "/fail", payload=f"status={status_code}")
+            error(f"  ✗ Status: down/error (HTTP {status_code})")
+    except requests.exceptions.Timeout:
+        ping_healthcheck(status_uuid, "/fail", payload="status=timeout")
+        error("  ✗ Status check timed out")
+    except requests.exceptions.SSLError:
+        ping_healthcheck(status_uuid, "/fail", payload="status=ssl_error")
+        error("  ✗ SSL Error")
+    except requests.exceptions.ConnectionError:
+        ping_healthcheck(status_uuid, "/fail", payload="status=connection_error")
+        error("  ✗ Connection Error")
+    except requests.exceptions.RequestException:
+        ping_healthcheck(status_uuid, "/fail", payload="status=request_error")
+        error("  ✗ Request Error")
+
+def action_check_domains():
+    """Runs status and expiry checks for all configured domains."""
+    info("Starting: Check Domains")
+    domains = load_domains() # Uses the version that skips invalid lines
+    if not domains:
+        warn("No valid domains loaded to check.")
+        return
+    for domain_data in domains:
+        info(f"--- Processing {domain_data['domain']} ---")
+        # This call will now work because the function is defined
+        check_domain_status(domain_data['domain'], domain_data['status_uuid'])
+        if domain_data.get('expiry_uuid'): # Check if expiry UUID exists and is not empty
+            check_domain_expiry(domain_data['domain'], domain_data['expiry_uuid'])
+        else:
+            debug(f"Skipping expiry check for {domain_data['domain']} (no expiry UUID configured).")
+    info("Finished: Check Domains")
+
+
+
+def action_remove_unused_checks():
+    """Removes healthchecks that are not listed in the domain file."""
+    info("Starting: Remove Unused Checks")
+    all_checks_details = get_all_healthchecks_details()
+    if not all_checks_details:
+        info("No healthchecks found on the account. Nothing to remove.")
+        return
+
+    all_api_uuids = {check['uuid'] for check in all_checks_details}
+    debug(f"Found {len(all_api_uuids)} checks via API.")
+
+    # Use the load_domains that skips invalid lines, as only valid entries count
+    domains = load_domains()
+    used_uuids = set()
+    for d in domains:
+        if d.get('status_uuid'):
+            used_uuids.add(d['status_uuid'])
+        if d.get('expiry_uuid'):
+            used_uuids.add(d['expiry_uuid'])
+    debug(f"Found {len(used_uuids)} used UUIDs from valid entries in {DOMAIN_FILE}.")
+
+    unused_uuids = all_api_uuids - used_uuids
+    deleted_count = 0
+    if not unused_uuids:
+        info("No unused checks found.")
+    else:
+        info(f"Found {len(unused_uuids)} unused checks to delete:")
+        for uuid in unused_uuids:
+             check_info = next((c for c in all_checks_details if c['uuid'] == uuid), None)
+             if check_info:
+                 info(f"  - Deleting unused check: {uuid} (Name: {check_info.get('name', 'N/A')}, Tags: {check_info.get('tags', 'N/A')})")
+             else:
+                 info(f"  - Deleting unused check: {uuid}")
+             delete_healthcheck(uuid)
+             deleted_count += 1
+        info(f"Deleted {deleted_count} unused checks.")
+    info("Finished: Remove Unused Checks")
+
+
+# ... (rest of the action functions: remove_all, list_checks, list_domains, delete_markers) ...
+# ... (COMMAND_MAP and __main__ block remain the same) ...
+
+# --- Helper Functions needed by other actions ---
+def delete_healthcheck(uuid):
+    """Deletes a healthcheck by its UUID."""
+    if not uuid:
+        warn("Skipping deletion: No UUID provided.")
+        return False # Indicate failure
+
+    response_data = _make_api_request('DELETE', f'checks/{uuid}')
+
+    # Success is indicated if _make_api_request didn't return None AND didn't log an error.
+    # The returned data itself (the deleted object) is confirmation of success here.
+    # We rely on _make_api_request logging errors if the status code was bad.
+    if response_data is not None: # Hypothetically check if needed
+        # Log success based on receiving a response (or None for 204) without prior error logs
+        info(f"Deletion API call for healthcheck {uuid} appears successful.")
+        # Optionally, log the details if needed for confirmation:
+        # if response_data:
+        #     debug(f"API returned deleted object details: {response_data}")
+        return True
+    else:
+        # An error should have already been logged by _make_api_request
+        error(f"Deletion failed for healthcheck {uuid}.")
+        return False # Indicate failure
+
+# In this refined version, we simplify: if _make_api_request returns anything
+# (including the deleted object) or None (for 204) WITHOUT having logged an error
+# (due to raise_for_status), we consider it a success for this function.
+# A more complex state tracking could be added if needed.
+
+def get_all_healthchecks_details():
+    """Retrieves details for all healthchecks."""
+    response_data = _make_api_request('GET', 'checks/')
+    return response_data.get('checks', []) if response_data else []
+
+def ping_healthcheck(uuid, endpoint_suffix="", payload=None):
+     """Pings a healthcheck endpoint (success, fail, log, start)."""
+     if not uuid:
+        warn(f"Skipping ping: No UUID provided (suffix: {endpoint_suffix})")
+        return
+     # Ensure BASE_URL is properly configured
+     if not BASE_URL or not BASE_URL.startswith(('http://', 'https://')):
+         error(f"Invalid BASE_URL configured: '{BASE_URL}'. Cannot ping.")
+         return
+
+     ping_url = f"{BASE_URL.rstrip('/')}/{uuid}{endpoint_suffix}"
+     headers = {'User-Agent': 'domain-hc-script/1.0'} # Identify the client
+     try:
+         # Use POST for /fail, /log, /start; GET for success ping
+         method = 'POST' if endpoint_suffix else 'GET'
+         kwargs = {'headers': headers, 'timeout': 10}
+         # Send payload as x-www-form-urlencoded data for POST
+         if method == 'POST' and payload:
+             # Check if payload is already a string or needs encoding
+             if isinstance(payload, dict):
+                  # Simple urlencoding for dict - consider a library for complex cases
+                  kwargs['data'] = '&'.join([f"{key}={value}" for key, value in payload.items()])
+                  headers['Content-Type'] = 'application/x-www-form-urlencoded'
+             else:
+                 kwargs['data'] = payload # Assume string payload is already formatted
+                 # Might still need Content-Type header depending on server expectation
+                 # headers['Content-Type'] = 'application/x-www-form-urlencoded' # Or text/plain?
+
+         response = requests.request(method, ping_url, **kwargs)
+         response.raise_for_status()
+         debug(f"Ping successful: {ping_url} (Payload: {payload})")
+     except requests.exceptions.RequestException as e:
+         error(f"Ping failed: {ping_url} - {e}")
+
+def _parse_whois_expiry(whois_output):
+    """Attempts to parse the expiry date from WHOIS output."""
+    # Common patterns for expiry dates - add more as needed
+    patterns = [
+        # Handle the T...Z format specifically first
+        r'(?:Registry Expiry Date|Expiration Date|Expiry Date|paid-till):\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)',
+        # General patterns (capture value after the label)
+        r'(?:Registry Expiry Date|Expiration Date|Expiry Date|paid-till):\s*(\S+)',
+        r'expires:\s*(\S+)',
+        r'Expiration Time:\s*(\S+)'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, whois_output, re.IGNORECASE)
+        if match:
+            date_str = match.group(1).strip()
+            # Try parsing common date formats (ISO, variations)
+            # Prioritize formats often indicating UTC or specific structures
+            formats_to_try = [
+                ('%Y-%m-%dT%H:%M:%SZ', True), # Explicit UTC via Z
+                ('%Y-%m-%d', False),
+                ('%d-%b-%Y', False),
+                ('%Y.%m.%d', False),
+                ('%d/%m/%Y', False),
+                # Add other common formats if needed
+            ]
+            for fmt, is_explicit_utc in formats_to_try:
+                try:
+                    dt_naive = datetime.datetime.strptime(date_str, fmt)
+                    # Make the datetime object timezone-aware (assuming UTC)
+                    # WHOIS data is typically UTC, even if not explicitly marked.
+                    # If the format explicitly indicated UTC ('Z'), we know it is.
+                    # Otherwise, we assume it is.
+                    dt_aware = dt_naive.replace(tzinfo=datetime.timezone.utc)
+                    return dt_aware
+                except ValueError:
+                    continue
+            warn(f"Could not parse matched date string: '{date_str}' with known formats.")
+            return None # Matched but couldn't parse
+
+    debug("No expiry date pattern matched in WHOIS output.")
+    return None # No pattern matched
+
+def check_domain_expiry(domain, expiry_uuid):
+    """Checks domain expiry using WHOIS and pings the expiry healthcheck. Skips WHOIS for subdomains."""
+    info(f"Checking expiry for {domain}...")
+
+    # --- Subdomain Check ---
+    # Skip WHOIS if there are more than 1 dot (e.g., test.domain.com)
+    # Adjust this threshold if needed (e.g., > 2 for domain.co.uk handling)
+    is_subdomain = domain.count('.') > 1
+    if is_subdomain:
+        info(f"  ↪ Skipping WHOIS lookup for apparent subdomain: {domain}")
+        # Ping success to keep the check alive on Healthchecks.io, but note it was skipped
+        ping_healthcheck(expiry_uuid, payload="status=skipped_subdomain")
+        # We don't need marker logic for skipped subdomains as no check is performed
+        return # Exit the function early
+    # --- End Subdomain Check ---
+
+    # Marker file logic to avoid checking *root* domains too frequently
+    marker_dir = "/tmp/domain-hc-markers" # Use a dedicated subdir
+    marker_file = os.path.join(marker_dir, f"expiry_check_{re.sub(r'[^a-zA-Z0-9.-]+', '_', domain)}") # Allow `.` and `-`
+    seven_days_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7) # Use UTC now
+
+    try:
+        os.makedirs(marker_dir, exist_ok=True) # Ensure marker directory exists
+        if os.path.exists(marker_file):
+            try:
+                marker_timestamp = os.path.getmtime(marker_file)
+                # Convert marker timestamp to UTC datetime object
+                marker_time = datetime.datetime.fromtimestamp(marker_timestamp, datetime.timezone.utc)
+                if marker_time >= seven_days_ago:
+                    info(f"  ↻ Expiry check skipped (within last 7 days based on marker {marker_time.strftime('%Y-%m-%d %H:%M:%S %Z')}) for {domain}.")
+                    # ping_healthcheck(expiry_uuid)
+                    return
+            except Exception as e:
+                warn(f"Could not read or interpret marker file timestamp for {marker_file}: {e}")
+                # Proceed with check if marker reading fails
+    except OSError as e:
+        error(f"Could not create/access marker directory {marker_dir}: {e}")
+        # Decide whether to continue without marker logic or fail
+        # If we can't use markers, maybe we should still proceed, but log it?
+        # For now, let's proceed but it won't update the marker later.
+        pass # Continue the check
+
+    # --- WHOIS Execution ---
+    try:
+        info(f"  → Running WHOIS for {domain}...")
+        # Explicitly capture output as text, handle potential errors
+        process = subprocess.run(['whois', domain], capture_output=True, text=True, check=False, timeout=30) # Added timeout
+
+        if process.returncode != 0:
+            # WHOIS command failed
+            error(f"  ❌ WHOIS command failed for {domain} with exit code {process.returncode}. Stderr: {process.stderr.strip()}")
+            ping_healthcheck(expiry_uuid + "/fail", payload=f"stderr={process.stderr.strip()}") # Ping fail
+            return # Don't proceed further if WHOIS fails
+
+        whois_output = process.stdout
+        debug(f"WHOIS output for {domain}:\n{whois_output[:500]}...") # Log truncated output
+
+        # --- Expiry Parsing ---
+        expiry_date = _parse_whois_expiry(whois_output)
+
+        if expiry_date:
+            info(f"  ✓ Parsed Expiry Date for {domain}: {expiry_date.strftime('%Y-%m-%d')}")
+            now = datetime.datetime.now(datetime.timezone.utc)
+            time_until_expiry = expiry_date - now
+
+            # Check if expiry is within 30 days (configurable threshold)
+            if time_until_expiry <= datetime.timedelta(days=30):
+                warn(f"  ⚠️ Domain {domain} expires soon! ({time_until_expiry.days} days)")
+                # Consider pinging fail or a specific endpoint if expiring soon
+                ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={time_until_expiry.days}")
+            else:
+                info(f"  ✓ Domain {domain} expiry is OK ({time_until_expiry.days} days remaining).")
+                ping_healthcheck(expiry_uuid, payload=f"status=ok&days_left={time_until_expiry.days}") # Ping success
+
+            # --- Update Marker File ---
+            try:
+                # Create or update the marker file timestamp
+                with open(marker_file, 'w') as f:
+                    f.write(datetime.datetime.now(datetime.timezone.utc).isoformat()) # Write timestamp
+                info(f"  ✓ Updated marker file: {marker_file}")
+            except IOError as e:
+                error(f"  ❌ Failed to write marker file {marker_file}: {e}")
+                # Ping failure if marker update fails? Or just log? Let's log for now.
+
+        else:
+            # Expiry date could not be parsed
+            error(f"  ❌ Could not parse expiry date for {domain} from WHOIS output.")
+            ping_healthcheck(expiry_uuid + "/fail", payload="status=parsing_failed") # Ping fail
+
+    except FileNotFoundError:
+        error(f"  ❌ WHOIS command not found. Please ensure 'whois' is installed and in PATH.")
+        ping_healthcheck(expiry_uuid + "/fail", payload="status=whois_not_found")
+    except subprocess.TimeoutExpired:
+        error(f"  ❌ WHOIS command timed out for {domain}.")
+        ping_healthcheck(expiry_uuid + "/fail", payload="status=timeout")
+    except Exception as e:
+        # Catch other potential errors during subprocess execution or parsing
+        error(f"  ❌ An unexpected error occurred during WHOIS check for {domain}: {e}")
+        # Use traceback for more detail if needed: import traceback; traceback.print_exc()
+        ping_healthcheck(expiry_uuid + "/fail", payload=f"status=unexpected_error&error={str(e)}")
+
+def action_remove_all_checks():
+    """Removes ALL healthchecks from the account and clears the domain file."""
+    info("Starting: Remove ALL Checks")
+    confirm = input("WARNING: This will delete ALL healthchecks on the account associated with the API key and clear the domains file. Type 'YES' to confirm: ")
+    if confirm != 'YES':
+        info("Operation cancelled.")
+        return
+
+    all_checks_details = get_all_healthchecks_details()
+    deleted_count = 0
+    failed_count = 0
+    if not all_checks_details:
+        info("No healthchecks found to delete.")
+    else:
+        info(f"Deleting {len(all_checks_details)} healthchecks...")
+        for check in all_checks_details:
+            uuid = check['uuid']
+            info(f"  - Attempting delete: {uuid} (Name: {check.get('name', 'N/A')})")
+            if delete_healthcheck(uuid):
+                deleted_count += 1
+            else:
+                failed_count += 1
+        info(f"Finished deletions: {deleted_count} successful, {failed_count} failed.")
+
+    # Clear the domain file (keeping comments if desired, or completely empty)
+    try:
+        with open(DOMAIN_FILE, "w") as f:
+            f.write("# Domain file cleared by remove-all command\n")
+            f.write("# Add new domains in the format: example.com s:<status_uuid> e:<expiry_uuid>\n")
+        info(f"Cleared domain entries in {DOMAIN_FILE}")
+    except IOError:
+        error(f"Could not clear domains file '{DOMAIN_FILE}'.")
+        error("Please check file permissions and disk space.")
+        error("Original file might be unchanged, or partially written.")
+    info("Finished: Remove ALL Checks")
+
+
+def action_list_checks():
+    """Lists all healthchecks found via the API."""
+    info("Starting: List Checks from API")
+    all_checks_details = get_all_healthchecks_details()
+    if not all_checks_details:
+        info("No healthchecks found on the account.")
+    else:
+        info(f"Found {len(all_checks_details)} Healthchecks:")
+        # Sort checks by name for consistent output
+        for check in sorted(all_checks_details, key=lambda x: x.get('name', '').lower()):
+             # API returns tags as a space-separated string, not list
+             tags_str = check.get('tags', '')
+             # Formats last ping nicely if present
+             last_ping_str = check.get('last_ping')
+             if last_ping_str:
+                 try:
+                      # Attempt to parse and format the timestamp
+                      last_ping_dt = datetime.datetime.fromisoformat(last_ping_str.replace('Z', '+00:00'))
+                      last_ping_formatted = last_ping_dt.strftime('%Y-%m-%d %H:%M:%S %Z')
+                 except ValueError:
+                      last_ping_formatted = last_ping_str # Keep original if parsing fails
+             else:
+                 last_ping_formatted = "Never"
+
+             info(f"  - Name: {check.get('name', 'N/A'):<30} UUID: {check['uuid']} Tags: [{tags_str}] Last Ping: {last_ping_formatted} Status: {check.get('status','N/A')}")
+    info("Finished: List Checks from API")
+
+
+def action_list_domains():
+    """Lists domains configured in the local file."""
+    info("Starting: List Domains from File")
+    # Use the version of load_domains that skips invalid lines for listing
+    domains = load_domains()
+    if not domains:
+        info(f"No valid domains found in {DOMAIN_FILE}.")
+    else:
+        info(f"Valid domains configured in {DOMAIN_FILE}:")
+        for domain in domains:
+             expiry_info = f"Expiry UUID: {domain['expiry_uuid']}" if domain['expiry_uuid'] else "Expiry UUID: (Not set)"
+             info(f"  - Domain: {domain['domain']:<30} Status UUID: {domain['status_uuid']} {expiry_info}")
+    info("Finished: List Domains from File")
+
+def action_delete_markers():
+    """Deletes the temporary expiry check marker files."""
+    info("Starting: Delete Expiry Markers")
+    marker_dir = "/tmp/domain-hc-markers"
+    deleted_count = 0
+    if not os.path.isdir(marker_dir):
+        info(f"Marker directory '{marker_dir}' does not exist. Nothing to delete.")
+        return
+
+    try:
+        for filename in os.listdir(marker_dir):
+            if filename.startswith("expiry_check_"):
+                file_path = os.path.join(marker_dir, filename)
+                try:
+                    os.remove(file_path)
+                    info(f"  - Deleted marker: {file_path}")
+                    deleted_count += 1
+                except OSError as e:
+                    error(f"Could not delete marker file '{file_path}': {e}")
+        if deleted_count == 0:
+            info(f"No marker files found matching 'expiry_check_*' in {marker_dir}.")
+        else:
+            info(f"Deleted {deleted_count} marker files from {marker_dir}.")
+    except OSError as e:
+        error(f"Could not list files in marker directory '{marker_dir}': {e}")
+    info("Finished: Delete Expiry Markers")
+
+# --- Command Mapping ---
+COMMAND_MAP = {
+    'create': {'func': action_create_domain_checks, 'help': 'Ensure checks exist for all domains in file, creating if missing.'},
+    'check': {'func': action_check_domains, 'help': 'Check status/expiry for configured domains and ping healthchecks.'},
+    'remove-unused': {'func': action_remove_unused_checks, 'help': 'Remove healthchecks from API not found in the local file.'},
+    'remove-all': {'func': action_remove_all_checks, 'help': 'DANGER: Remove ALL healthchecks from API and clear local file.'},
+    'list-checks': {'func': action_list_checks, 'help': 'List all healthchecks registered in the Healthchecks.io account.'},
+    'list-domains': {'func': action_list_domains, 'help': 'List valid domains and their UUIDs configured in the local file.'},
+    'delete-markers': {'func': action_delete_markers, 'help': 'Delete temporary expiry check marker files from /tmp.'},
+}
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    # Set up parser
+    parser = argparse.ArgumentParser(
+        description="Manage Healthchecks.io domain status and expiry checks.",
+        formatter_class=argparse.RawDescriptionHelpFormatter # Preserve formatting in description
+    )
+
+    # Add the positional command argument
+    parser.add_argument(
+        'command',
+        nargs='?',  # Makes the command optional
+        choices=COMMAND_MAP.keys(), # Restrict choices to our defined commands
+        help='The command to run. If omitted, lists available commands.',
+        metavar='COMMAND' # Display 'COMMAND' in help instead of the choice list
+    )
+
+    # Add optional verbose flag maybe?
+    # parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose debug logging.')
+
+    args = parser.parse_args()
+
+    # Logic to handle command execution or list commands
+    if args.command is None:
+        print("Available commands:")
+        # Find the longest command name for alignment
+        max_len = max(len(cmd) for cmd in COMMAND_MAP.keys())
+        for cmd, details in COMMAND_MAP.items():
+            print(f"  {cmd:<{max_len}}   {details['help']}")
+        print(f"\nRun '{os.path.basename(__file__)} <COMMAND>' to execute a command.")
+    else:
+        # Execute the selected command
+        command_details = COMMAND_MAP[args.command]
+        function_to_run = command_details['func']
+        try:
+            function_to_run()
+            info(f"Command '{args.command}' completed successfully.")
+        except Exception as e:
+            # Catch unexpected errors during command execution
+            error(f"An unexpected error occurred while running command '{args.command}': {e}")
+            # Optionally add traceback logging here for debugging
+            import traceback
+            error("Traceback:\n" + traceback.format_exc())
+            exit(1) # Exit with error status
