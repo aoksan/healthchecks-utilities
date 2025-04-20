@@ -1,3 +1,15 @@
-.env
+# Log files & domains files
 *.log
+domains.*
+domains
+
+# Environment files
+.env
+
+# Python virtual environment
+venv
+*.egg-info/
+
+# Workspace specific files
+.vscode
 .idea
