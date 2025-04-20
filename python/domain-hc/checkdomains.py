@@ -6,6 +6,7 @@ import json
 import requests
 import re
 import argparse
+from collections import defaultdict
 from dotenv import load_dotenv
 
 load_dotenv() # Loads environment variables from .env file
@@ -423,32 +424,48 @@ def load_domains():
 def action_sync_file():
     """
     Synchronizes the local domain file with the API.
-    Removes UUIDs from the file if they no longer exist in the Healthchecks account.
+    1. Removes UUIDs from file entries if they no longer exist in the API.
+    2. Adds new entries to the file for checks found in the API but not in the file.
     """
-    info("Starting: Sync Domain File with API")
+    info("Starting: Sync Domain File with API (Add Missing)")
 
-    # 1. Get all existing UUIDs from the API
+    # 1. Get all existing check details from the API
     all_checks_details = get_all_healthchecks_details()
     if all_checks_details is None: # Check if API call failed critically
         error("Failed to retrieve checks from API. Aborting sync.")
         return
 
-    api_uuid_set = {check['uuid'] for check in all_checks_details}
-    info(f"Found {len(api_uuid_set)} check UUIDs via API.")
-    if not api_uuid_set and len(all_checks_details) > 0:
-        warn("API returned checks but failed to extract UUIDs, proceeding cautiously.")
-        # Decide if you want to abort here
-
-    # 2. Read the raw local file content
-    raw_lines_data = load_domains_raw()
-    if not raw_lines_data:
-        info("Local domain file is empty or not found. Nothing to sync.")
+    # Create a set of UUIDs and a dict mapping UUID to details for easy lookup
+    api_uuid_set = set()
+    api_checks_dict = {}
+    if isinstance(all_checks_details, list):
+        try:
+            for check in all_checks_details:
+                if isinstance(check, dict) and 'uuid' in check:
+                    uuid = check['uuid']
+                    api_uuid_set.add(uuid)
+                    api_checks_dict[uuid] = check # Store full details
+                else:
+                    warn(f"Unexpected item format in API check details: {check}")
+        except TypeError as e:
+            error(f"Error processing API check details list: {e}")
+            return
+    else:
+        error("API check details are not in the expected list format. Aborting sync.")
         return
 
-    processed_domains = [] # Store results for rewriting the file
-    file_needs_update = False # Flag to track if any changes are needed
+    info(f"Found {len(api_uuid_set)} check UUIDs via API.")
 
-    # 3. Process each line from the file
+    # 2. Read the raw local file content and process existing entries
+    raw_lines_data = load_domains_raw()
+    processed_file_entries = [] # Stores final lines (comments, validated domains)
+    file_needs_update = False # Track if file content changes
+    used_api_uuids_from_file = set() # Track UUIDs mentioned in the file
+
+    if not raw_lines_data:
+        info("Local domain file is empty or not found.")
+        # Proceed to potentially add all API checks if the file was missing/empty
+
     for line_data in raw_lines_data:
         line_num = line_data['line_num']
         original_line = line_data['raw_line']
@@ -477,54 +494,134 @@ def action_sync_file():
             if current_status_uuid:
                 if current_status_uuid in api_uuid_set:
                     final_status_uuid = current_status_uuid # Keep it
+                    used_api_uuids_from_file.add(current_status_uuid) # Mark as used
                 else:
-                    warn(f"Sync: Status UUID '{current_status_uuid}' for domain '{domain}' (line {line_num}) not found in API. Removing from file.")
+                    warn(f"Sync: Status UUID '{current_status_uuid}' for domain '{domain}' (line {line_num}) not found in API. Removing.")
                     file_needs_update = True # Mark file for rewrite
 
             # Validate Expiry UUID
             if current_expiry_uuid:
                 if current_expiry_uuid in api_uuid_set:
                     final_expiry_uuid = current_expiry_uuid # Keep it
+                    used_api_uuids_from_file.add(current_expiry_uuid) # Mark as used
                 else:
-                    warn(f"Sync: Expiry UUID '{current_expiry_uuid}' for domain '{domain}' (line {line_num}) not found in API. Removing from file.")
+                    warn(f"Sync: Expiry UUID '{current_expiry_uuid}' for domain '{domain}' (line {line_num}) not found in API. Removing.")
                     file_needs_update = True # Mark file for rewrite
 
+            # Check if the original line changed due to UUID removal
+            original_parts_set = set(parts[1:])
+            final_parts_list = []
+            if final_status_uuid: final_parts_list.append(f"s:{final_status_uuid}")
+            if final_expiry_uuid: final_parts_list.append(f"e:{final_expiry_uuid}")
+            if set(final_parts_list) != original_parts_set:
+                file_needs_update = True # Content changed
+
         # Store the processed/validated data for this line
-        processed_domains.append({
+        processed_file_entries.append({
             'type': entry_type,
-            'content': entry_content, # Store original line for comments/blanks
+            'content': entry_content, # Store original line for comments/blanks for now
             'domain': final_domain,
             'status_uuid': final_status_uuid,
             'expiry_uuid': final_expiry_uuid
         })
 
-    # 4. Rewrite the file ONLY if changes were detected
+    # 3. Identify API checks missing from the file
+    missing_api_uuids = api_uuid_set - used_api_uuids_from_file
+    info(f"Found {len(missing_api_uuids)} check UUIDs in API but not in the local file.")
+
+    newly_added_entries = []
+    if missing_api_uuids:
+        file_needs_update = True # Mark file for rewrite if adding new entries
+        info("Attempting to add missing checks to the file...")
+
+        # Group missing checks by their 'name' field to combine status/expiry
+        missing_checks_by_name = defaultdict(lambda: {'status_uuid': None, 'expiry_uuid': None, 'details': []})
+
+        for uuid in missing_api_uuids:
+            check_details = api_checks_dict.get(uuid)
+            if not check_details:
+                warn(f"Could not find details for missing API UUID '{uuid}'. Skipping add.")
+                continue
+
+            domain_name = check_details.get('name')
+            tags = check_details.get('tags', '') # API returns space-separated string
+
+            if not domain_name:
+                warn(f"API Check UUID '{uuid}' has no name. Skipping add.")
+                continue
+
+            missing_checks_by_name[domain_name]['details'].append(check_details) # Store details if needed later
+            if 'status' in tags.split():
+                if missing_checks_by_name[domain_name]['status_uuid']:
+                    warn(f"Multiple 'status' checks found for name '{domain_name}' in missing API checks (UUIDs: {missing_checks_by_name[domain_name]['status_uuid']}, {uuid}). Using first found.")
+                else:
+                    missing_checks_by_name[domain_name]['status_uuid'] = uuid
+            elif 'expiry' in tags.split():
+                if missing_checks_by_name[domain_name]['expiry_uuid']:
+                    warn(f"Multiple 'expiry' checks found for name '{domain_name}' in missing API checks (UUIDs: {missing_checks_by_name[domain_name]['expiry_uuid']}, {uuid}). Using first found.")
+                else:
+                    missing_checks_by_name[domain_name]['expiry_uuid'] = uuid
+            else:
+                warn(f"Missing API Check UUID '{uuid}' (Name: '{domain_name}') has unexpected tags: '{tags}'. Treating as status for now.")
+                # Default to status if tags are weird, or handle differently
+                if not missing_checks_by_name[domain_name]['status_uuid']:
+                    missing_checks_by_name[domain_name]['status_uuid'] = uuid
+
+
+        # Create the new entries to be added to the file
+        added_count = 0
+        for domain_name, uuids in sorted(missing_checks_by_name.items()): # Sort by name
+            if not uuids['status_uuid'] and not uuids['expiry_uuid']:
+                warn(f"Could not assign type (status/expiry) for checks associated with name '{domain_name}'. Skipping add.")
+                continue
+
+            info(f"  + Adding entry for '{domain_name}' (Status: {uuids['status_uuid'] or 'N/A'}, Expiry: {uuids['expiry_uuid'] or 'N/A'})")
+            newly_added_entries.append({
+                'type': 'domain',
+                'domain': domain_name,
+                'status_uuid': uuids['status_uuid'],
+                'expiry_uuid': uuids['expiry_uuid']
+            })
+            added_count += 1
+        info(f"Prepared {added_count} new entries to add.")
+
+
+    # 4. Rewrite the file ONLY if changes were detected (validation or adds)
     if file_needs_update:
-        info(f"Rewriting {DOMAIN_FILE} to remove non-existent UUIDs...")
+        info(f"Rewriting {DOMAIN_FILE} with synchronised data...")
         try:
             with open(DOMAIN_FILE, 'w') as outfile:
-                for entry in processed_domains:
+                # Write validated original entries first
+                for entry in processed_file_entries:
                     if entry['type'] == 'comment_or_blank':
                         outfile.write(entry['content'] + "\n")
                     elif entry['type'] == 'domain':
                         line_parts = [entry['domain']]
-                        # Only write UUIDs that were validated (not None)
-                        if entry['status_uuid']:
-                            line_parts.append(f"s:{entry['status_uuid']}")
-                        if entry['expiry_uuid']:
-                            line_parts.append(f"e:{entry['expiry_uuid']}")
-                        # If both UUIDs were removed, the line will just be the domain name.
-                        # This is okay, as load_domains will skip it, and create can fix it.
+                        if entry['status_uuid']: line_parts.append(f"s:{entry['status_uuid']}")
+                        if entry['expiry_uuid']: line_parts.append(f"e:{entry['expiry_uuid']}")
+                        # Avoid writing lines with only domain if both UUIDs were removed and not re-added
+                        if len(line_parts) > 1:
+                            outfile.write(" ".join(line_parts) + "\n")
+                        else:
+                            warn(f"Skipping write for '{entry['domain']}' as both UUIDs were invalid and removed.")
+
+                # Append the newly identified entries
+                if newly_added_entries:
+                    outfile.write("\n# --- Checks Added by Sync Command ---\n")
+                    for entry in newly_added_entries:
+                        line_parts = [entry['domain']]
+                        if entry['status_uuid']: line_parts.append(f"s:{entry['status_uuid']}")
+                        if entry['expiry_uuid']: line_parts.append(f"e:{entry['expiry_uuid']}")
                         outfile.write(" ".join(line_parts) + "\n")
+
             info(f"Successfully synchronized {DOMAIN_FILE}.")
         except IOError as e:
             error(f"Failed to rewrite {DOMAIN_FILE} during sync: {e}")
             error("Please check file permissions and disk space.")
     else:
-        info("No inconsistencies found between local file UUIDs and API. File remains unchanged.")
+        info("No inconsistencies found or missing checks to add. File remains unchanged.")
 
-    info("Finished: Sync Domain File with API")
-
+    info("Finished: Sync Domain File with API (Add Missing)")
 def check_domain_status(domain, status_uuid):
     """Checks website status and pings the status healthcheck."""
     info(f"Checking status for {domain}...")
