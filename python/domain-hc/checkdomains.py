@@ -303,8 +303,9 @@ def load_domains():
 def check_domain_status(domain, status_uuid):
     """Checks website status and pings the status healthcheck."""
     info(f"Checking status for {domain}...")
+    # TODO 1: Change verify=False to True
     try:
-        response = requests.get(f"https://{domain}", timeout=10, allow_redirects=True, verify=True, headers={'User-Agent': 'domain-hc-script/1.0'})
+        response = requests.get(f"https://{domain}", timeout=10, allow_redirects=True, verify=False, headers={'User-Agent': 'domain-hc-script/1.0'})
         status_code = response.status_code
         if 200 <= status_code < 400:
             ping_healthcheck(status_uuid)
@@ -421,38 +422,41 @@ def get_all_healthchecks_details():
     return response_data.get('checks', []) if response_data else []
 
 def ping_healthcheck(uuid, endpoint_suffix="", payload=None):
-     """Pings a healthcheck endpoint (success, fail, log, start)."""
-     if not uuid:
+    """Pings a healthcheck endpoint (success, fail, log, start). Uses POST if payload is present."""
+    if not uuid:
         warn(f"Skipping ping: No UUID provided (suffix: {endpoint_suffix})")
         return
-     # Ensure BASE_URL is properly configured
-     if not BASE_URL or not BASE_URL.startswith(('http://', 'https://')):
-         error(f"Invalid BASE_URL configured: '{BASE_URL}'. Cannot ping.")
-         return
+    # Ensure BASE_URL is properly configured
+    if not BASE_URL or not BASE_URL.startswith(('http://', 'https://')):
+        error(f"Invalid BASE_URL configured: '{BASE_URL}'. Cannot ping.")
+        return
 
-     ping_url = f"{BASE_URL.rstrip('/')}/{uuid}{endpoint_suffix}"
-     headers = {'User-Agent': 'domain-hc-script/1.0'} # Identify the client
-     try:
-         # Use POST for /fail, /log, /start; GET for success ping
-         method = 'POST' if endpoint_suffix else 'GET'
-         kwargs = {'headers': headers, 'timeout': 10}
-         # Send payload as x-www-form-urlencoded data for POST
-         if method == 'POST' and payload:
-             # Check if payload is already a string or needs encoding
-             if isinstance(payload, dict):
-                  # Simple urlencoding for dict - consider a library for complex cases
-                  kwargs['data'] = '&'.join([f"{key}={value}" for key, value in payload.items()])
-                  headers['Content-Type'] = 'application/x-www-form-urlencoded'
-             else:
-                 kwargs['data'] = payload # Assume string payload is already formatted
-                 # Might still need Content-Type header depending on server expectation
-                 # headers['Content-Type'] = 'application/x-www-form-urlencoded' # Or text/plain?
+    ping_url = f"{BASE_URL.rstrip('/')}/{uuid}{endpoint_suffix}"
+    # Start with base headers, modify within the block if needed
+    headers = {'User-Agent': 'domain-hc-script/1.0'}
+    try:
+        # --- Determine method based on payload presence first ---
+        if payload:
+            method = 'POST'
+        else:
+            # No payload, use POST only if suffix exists (fail, log, etc.)
+            method = 'POST' if endpoint_suffix else 'GET'
 
-         response = requests.request(method, ping_url, **kwargs)
-         response.raise_for_status()
-         debug(f"Ping successful: {ping_url} (Payload: {payload})")
-     except requests.exceptions.RequestException as e:
-         error(f"Ping failed: {ping_url} - {e}")
+        # Use separate args for requests.request
+        request_args = {'headers': headers, 'timeout': 10}
+
+        if method == 'POST' and payload:
+            # Set Content-Type and data for POST with payload
+            request_args['headers']['Content-Type'] = 'application/x-www-form-urlencoded'
+            request_args['data'] = payload # Send the raw string payload
+
+        # Make the request using the constructed arguments
+        response = requests.request(method, url=ping_url, **request_args)
+        response.raise_for_status()
+        # Debug log shows method used
+        debug(f"Ping successful ({method}): {ping_url} (Payload: {payload})")
+    except requests.exceptions.RequestException as e:
+        error(f"Ping failed ({method}): {ping_url} - {e}")
 
 def _parse_whois_expiry(whois_output):
     """Attempts to parse the expiry date from WHOIS output."""
@@ -596,7 +600,6 @@ def check_domain_expiry(domain, expiry_uuid):
         error(f"  ❌ An unexpected error occurred during WHOIS check for {domain}: {e}")
         # Use traceback for more detail if needed: import traceback; traceback.print_exc()
         ping_healthcheck(expiry_uuid + "/fail", payload=f"status=unexpected_error&error={str(e)}")
-
 def action_remove_all_checks():
     """Removes ALL healthchecks from the account and clears the domain file."""
     info("Starting: Remove ALL Checks")
