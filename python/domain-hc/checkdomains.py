@@ -420,7 +420,110 @@ def load_domains():
         error(f"Could not read domains file '{DOMAIN_FILE}': {e}")
     return domains
 
+def action_sync_file():
+    """
+    Synchronizes the local domain file with the API.
+    Removes UUIDs from the file if they no longer exist in the Healthchecks account.
+    """
+    info("Starting: Sync Domain File with API")
 
+    # 1. Get all existing UUIDs from the API
+    all_checks_details = get_all_healthchecks_details()
+    if all_checks_details is None: # Check if API call failed critically
+        error("Failed to retrieve checks from API. Aborting sync.")
+        return
+
+    api_uuid_set = {check['uuid'] for check in all_checks_details}
+    info(f"Found {len(api_uuid_set)} check UUIDs via API.")
+    if not api_uuid_set and len(all_checks_details) > 0:
+        warn("API returned checks but failed to extract UUIDs, proceeding cautiously.")
+        # Decide if you want to abort here
+
+    # 2. Read the raw local file content
+    raw_lines_data = load_domains_raw()
+    if not raw_lines_data:
+        info("Local domain file is empty or not found. Nothing to sync.")
+        return
+
+    processed_domains = [] # Store results for rewriting the file
+    file_needs_update = False # Flag to track if any changes are needed
+
+    # 3. Process each line from the file
+    for line_data in raw_lines_data:
+        line_num = line_data['line_num']
+        original_line = line_data['raw_line']
+        entry_type = 'comment_or_blank'
+        entry_content = original_line
+        final_domain = None
+        final_status_uuid = None
+        final_expiry_uuid = None
+
+        if original_line and not original_line.startswith('#'):
+            entry_type = 'domain'
+            parts = original_line.split()
+            domain = parts[0]
+            current_status_uuid = None
+            current_expiry_uuid = None
+
+            for part in parts[1:]:
+                if part.startswith('s:'):
+                    current_status_uuid = part.split(':', 1)[1]
+                elif part.startswith('e:'):
+                    current_expiry_uuid = part.split(':', 1)[1]
+
+            final_domain = domain # Keep the domain name
+
+            # Validate Status UUID
+            if current_status_uuid:
+                if current_status_uuid in api_uuid_set:
+                    final_status_uuid = current_status_uuid # Keep it
+                else:
+                    warn(f"Sync: Status UUID '{current_status_uuid}' for domain '{domain}' (line {line_num}) not found in API. Removing from file.")
+                    file_needs_update = True # Mark file for rewrite
+
+            # Validate Expiry UUID
+            if current_expiry_uuid:
+                if current_expiry_uuid in api_uuid_set:
+                    final_expiry_uuid = current_expiry_uuid # Keep it
+                else:
+                    warn(f"Sync: Expiry UUID '{current_expiry_uuid}' for domain '{domain}' (line {line_num}) not found in API. Removing from file.")
+                    file_needs_update = True # Mark file for rewrite
+
+        # Store the processed/validated data for this line
+        processed_domains.append({
+            'type': entry_type,
+            'content': entry_content, # Store original line for comments/blanks
+            'domain': final_domain,
+            'status_uuid': final_status_uuid,
+            'expiry_uuid': final_expiry_uuid
+        })
+
+    # 4. Rewrite the file ONLY if changes were detected
+    if file_needs_update:
+        info(f"Rewriting {DOMAIN_FILE} to remove non-existent UUIDs...")
+        try:
+            with open(DOMAIN_FILE, 'w') as outfile:
+                for entry in processed_domains:
+                    if entry['type'] == 'comment_or_blank':
+                        outfile.write(entry['content'] + "\n")
+                    elif entry['type'] == 'domain':
+                        line_parts = [entry['domain']]
+                        # Only write UUIDs that were validated (not None)
+                        if entry['status_uuid']:
+                            line_parts.append(f"s:{entry['status_uuid']}")
+                        if entry['expiry_uuid']:
+                            line_parts.append(f"e:{entry['expiry_uuid']}")
+                        # If both UUIDs were removed, the line will just be the domain name.
+                        # This is okay, as load_domains will skip it, and create can fix it.
+                        outfile.write(" ".join(line_parts) + "\n")
+            info(f"Successfully synchronized {DOMAIN_FILE}.")
+        except IOError as e:
+            error(f"Failed to rewrite {DOMAIN_FILE} during sync: {e}")
+            error("Please check file permissions and disk space.")
+    else:
+        info("No inconsistencies found between local file UUIDs and API. File remains unchanged.")
+
+    info("Finished: Sync Domain File with API")
 
 def check_domain_status(domain, status_uuid):
     """Checks website status and pings the status healthcheck."""
@@ -837,6 +940,7 @@ COMMAND_MAP = {
     'list-checks': {'func': action_list_checks, 'help': 'List all healthchecks registered in the Healthchecks.io account.'},
     'list-domains': {'func': action_list_domains, 'help': 'List valid domains and their UUIDs configured in the local file.'},
     'delete-markers': {'func': action_delete_markers, 'help': 'Delete temporary expiry check marker files from /tmp.'},
+    'sync-file': {'func': action_sync_file, 'help': 'Removes non-existent UUIDs from the local domains file.'}
     # Note: action_create_single_domain is called via argparse logic, not directly via COMMAND_MAP lookup
 }
 
@@ -878,6 +982,7 @@ if __name__ == "__main__":
     list_checks_parser = subparsers.add_parser('list-checks', help=COMMAND_MAP['list-checks']['help'])
     list_domains_parser = subparsers.add_parser('list-domains', help=COMMAND_MAP['list-domains']['help'])
     delete_markers_parser = subparsers.add_parser('delete-markers', help=COMMAND_MAP['delete-markers']['help'])
+    sync_file_parser = subparsers.add_parser('sync-file', help=COMMAND_MAP['sync-file']['help'])
 
     # Parse arguments
     args = parser.parse_args()
@@ -902,6 +1007,8 @@ if __name__ == "__main__":
         action_list_domains()
     elif args.command == 'delete-markers':
         action_delete_markers()
+    elif args.command == 'sync-file':
+        action_sync_file()
     else:
         # No command was provided (e.g., script run with no arguments)
         print("Available commands:")
