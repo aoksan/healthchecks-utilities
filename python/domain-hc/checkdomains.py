@@ -99,6 +99,15 @@ def create_healthcheck(domain, check_type):
     if check_type == 'status':
         data['tz'] = 'Europe/Istanbul'
         data['schedule'] = '*/5 * * * *' # 5-minute interval
+        # TODO: Consider making this interval configurable, or change the default to 1 minute.
+        #  Currently we adjust to 1 hour
+        #  Note: The command may appear slow due to intentional sleep or waiting,
+        #       which could misleadingly trigger timeout logic or false error detection.
+        #       Current runtime stats for check command:
+        #         - User CPU time: 0.53s
+        #         - System CPU time: 0.08s
+        #         - CPU usage: 5%
+        #         - Total elapsed time: 11.491s
         data['grace'] = 3600  # 1-hour grace
     elif check_type == 'expiry':
         data['timeout'] = 3600 * 24 * 7 # 7-day timeout
