@@ -1021,14 +1021,27 @@ def check_domain_expiry(domain, expiry_uuid):
             now = datetime.datetime.now(datetime.timezone.utc)
             time_until_expiry = expiry_date - now
 
-            # Check if expiry is within 30 days (configurable threshold)
+            # Check if expiry is within 30 days OR already passed (configurable threshold)
             if time_until_expiry <= datetime.timedelta(days=30):
-                warn(f"  ⚠️ Domain {domain} expires soon! ({time_until_expiry.days} days)")
-                # Consider pinging fail or a specific endpoint if expiring soon
-                ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={time_until_expiry.days}")
+                # --- CORRECTED LOGIC ---
+                # Check if ALREADY expired (<= 0 days)
+                if time_until_expiry <= datetime.timedelta(days=0):
+                    days_ago = abs(time_until_expiry.days) # Calculate once
+                    warn(f"  ✗ Domain {domain} has expired! (Expired {days_ago} days ago)")
+                    # Ping fail with expired status (using corrected f-string)
+                    ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expired&days_expired={days_ago}")
+                # ELSE, it must be expiring soon (1-30 days)
+                else:
+                    days_left = time_until_expiry.days # Calculate once
+                    warn(f"  ⚠️ Domain {domain} expires soon! ({days_left} days)")
+                    # Ping fail but with expiring_soon status
+                    ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={days_left}")
+                # --- END CORRECTED LOGIC ---
+            # ELSE (more than 30 days remaining)
             else:
-                info(f"  ✓ Domain {domain} expiry is OK ({time_until_expiry.days} days remaining).")
-                ping_healthcheck(expiry_uuid, payload=f"status=ok&days_left={time_until_expiry.days}") # Ping success
+                days_left = time_until_expiry.days # Calculate once
+                info(f"  ✓ Domain {domain} expiry is OK ({days_left} days remaining).")
+                ping_healthcheck(expiry_uuid, payload=f"status=ok&days_left={days_left}") # Ping success
 
             # --- Update Marker File ---
             try:
@@ -1038,13 +1051,11 @@ def check_domain_expiry(domain, expiry_uuid):
                 info(f"  ✓ Updated marker file: {marker_file}")
             except IOError as e:
                 error(f"  ❌ Failed to write marker file {marker_file}: {e}")
-                # Ping failure if marker update fails? Or just log? Let's log for now.
 
         else:
             # Expiry date could not be parsed
             error(f"  ❌ Could not parse expiry date for {domain} from WHOIS output.")
             ping_healthcheck(expiry_uuid + "/fail", payload="status=parsing_failed") # Ping fail
-
     except FileNotFoundError:
         error(f"  ❌ WHOIS command not found. Please ensure 'whois' is installed and in PATH.")
         ping_healthcheck(expiry_uuid + "/fail", payload="status=whois_not_found")
