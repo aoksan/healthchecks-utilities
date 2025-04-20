@@ -3,8 +3,13 @@
 # If no domain is provided, delete all marker files in /tmp matching "expiry_check_*".
 # Running in debug mode; do not use in production.
 set -uo pipefail
-source ./helper_load_env.bash
-source ./helper_log.bash
+
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Source helper scripts using absolute paths
+source "$SCRIPT_DIR/helper_load_env.bash"
+source "$SCRIPT_DIR/helper_log.bash"
 
 log_header
 

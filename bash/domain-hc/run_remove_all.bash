@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source ./helper_load_env.bash
-source ./helper_log.bash
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Source helper scripts using absolute paths
+source "$SCRIPT_DIR/helper_load_env.bash"
+source "$SCRIPT_DIR/helper_log.bash"
 
 log_header
 

@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source ./helper_log.bash
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Source helper_log.bash using absolute path
+source "$SCRIPT_DIR/helper_log.bash"
 
 # Load API_URL and API_KEY from .env
-if [[ -f .env ]]; then
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
   # shellcheck disable=SC1091
-  source .env
+  source "$SCRIPT_DIR/.env"
 else
   warn ".env file not found. Please create one with API_URL and API_KEY." >&2
   exit 1
