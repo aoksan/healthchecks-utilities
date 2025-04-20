@@ -141,12 +141,134 @@ def load_domains_raw():
         error(f"Could not read domains file '{DOMAIN_FILE}'.")
     return lines_data
 
-def action_create_domain_checks():
+def action_create_single_domain(domain_to_process):
+    """
+    Ensures healthchecks exist for a SINGLE specified domain and adds/updates
+    its entry in the domain file.
+    """
+    info(f"Starting: Create Single Domain Checks for '{domain_to_process}'")
+    raw_lines_data = load_domains_raw()
+    processed_domains = []
+    domain_found = False
+    updated = False # Track if changes are needed for this specific domain
+
+    target_status_uuid = None
+    target_expiry_uuid = None
+    target_is_subdomain = domain_to_process.count('.') > 1
+
+    # Iterate through existing lines to find the domain and preserve others
+    for line_data in raw_lines_data:
+        original_line = line_data['raw_line']
+        entry = {'type': 'comment_or_blank', 'content': original_line} # Default
+
+        if original_line and not original_line.startswith('#'):
+            parts = original_line.split()
+            domain = parts[0]
+            current_status_uuid = None
+            current_expiry_uuid = None
+            for part in parts[1:]:
+                if part.startswith('s:'):
+                    current_status_uuid = part.split(':', 1)[1]
+                elif part.startswith('e:'):
+                    current_expiry_uuid = part.split(':', 1)[1]
+
+            entry = { # Store existing domain info
+                'type': 'domain',
+                'domain': domain,
+                'status_uuid': current_status_uuid,
+                'expiry_uuid': current_expiry_uuid
+            }
+
+            # Check if this is the domain we are looking for
+            if domain == domain_to_process:
+                domain_found = True
+                info(f"Found existing entry for '{domain_to_process}'. Checking UUIDs...")
+                target_status_uuid = current_status_uuid
+                target_expiry_uuid = current_expiry_uuid
+
+                # Create missing STATUS check
+                if not target_status_uuid:
+                    warn(f"Existing entry for '{domain_to_process}' is missing status UUID. Creating...")
+                    new_status_uuid = create_healthcheck(domain_to_process, 'status')
+                    if new_status_uuid:
+                        target_status_uuid = new_status_uuid
+                        entry['status_uuid'] = target_status_uuid # Update entry for rewrite
+                        updated = True
+                    else:
+                        warn(f"Failed to create status check for '{domain_to_process}'.")
+
+                # Create missing EXPIRY check (if applicable)
+                if not target_expiry_uuid:
+                    if target_is_subdomain:
+                        info(f"Skipping EXPIRY check creation for apparent subdomain: {domain_to_process}")
+                    elif target_status_uuid: # Only create if status is present
+                        warn(f"Existing entry for '{domain_to_process}' is missing expiry UUID. Creating...")
+                        new_expiry_uuid = create_healthcheck(domain_to_process, 'expiry')
+                        if new_expiry_uuid:
+                            target_expiry_uuid = new_expiry_uuid
+                            entry['expiry_uuid'] = target_expiry_uuid # Update entry for rewrite
+                            updated = True
+                        else:
+                            warn(f"Failed to create expiry check for '{domain_to_process}'.")
+                    else:
+                        warn(f"Skipping expiry check creation for '{domain_to_process}' because status check is missing or failed.")
+
+        processed_domains.append(entry) # Add the processed/preserved line
+
+    # If the domain was not found in the file, create checks and add it
+    if not domain_found:
+        info(f"Domain '{domain_to_process}' not found in {DOMAIN_FILE}. Creating new entry...")
+        target_status_uuid = create_healthcheck(domain_to_process, 'status')
+        if target_status_uuid:
+            updated = True # Need to write the new entry
+            if not target_is_subdomain:
+                target_expiry_uuid = create_healthcheck(domain_to_process, 'expiry')
+                if target_expiry_uuid:
+                    updated = True
+                else:
+                    warn(f"Failed to create expiry check for new domain '{domain_to_process}'.")
+            else:
+                info(f"Skipping EXPIRY check creation for new apparent subdomain: {domain_to_process}")
+
+            # Add the new domain entry to the list for writing
+            processed_domains.append({
+                'type': 'domain',
+                'domain': domain_to_process,
+                'status_uuid': target_status_uuid,
+                'expiry_uuid': target_expiry_uuid
+            })
+        else:
+            error(f"Failed to create initial status check for new domain '{domain_to_process}'. Cannot add to file.")
+
+
+    # Rewrite the file only if changes were made or a new domain was added
+    if updated:
+        info(f"Rewriting {DOMAIN_FILE} for domain '{domain_to_process}'...")
+        try:
+            with open(DOMAIN_FILE, 'w') as outfile:
+                for entry in processed_domains:
+                    if entry['type'] == 'comment_or_blank':
+                        outfile.write(entry['content'] + "\n")
+                    elif entry['type'] == 'domain':
+                        line_parts = [entry['domain']]
+                        if entry['status_uuid']: line_parts.append(f"s:{entry['status_uuid']}")
+                        if entry['expiry_uuid']: line_parts.append(f"e:{entry['expiry_uuid']}")
+                        outfile.write(" ".join(line_parts) + "\n")
+            info(f"Successfully updated {DOMAIN_FILE} for '{domain_to_process}'.")
+        except IOError as e:
+            error(f"Failed to rewrite {DOMAIN_FILE}: {e}")
+    else:
+        info(f"No updates needed or creation failed for '{domain_to_process}'. File not changed.")
+
+    info(f"Finished: Create Single Domain Checks for '{domain_to_process}'")
+
+def action_create_domain_checks_from_file():
     """
     Reads the domain file, creates missing healthchecks (status for all, expiry only for non-subdomains),
     and rewrites the file with updated info.
+    (Processes ENTIRE file)
     """
-    info("Starting: Create Domain Checks")
+    info("Starting: Create Domain Checks (Processing File)")
     raw_lines_data = load_domains_raw()
     if not raw_lines_data:
         info("Domain file is empty or not found. Nothing to create.")
@@ -252,7 +374,7 @@ def action_create_domain_checks():
     else:
         info("No new UUIDs were successfully created or file structure changes needed. Domain file remains unchanged.")
 
-    info("Finished: Create Domain Checks")
+    info("Finished: Create Domain Checks (Processing File)")
 
 
 # --- Other action_ functions (check_domains, remove_unused, etc.) ---
@@ -708,56 +830,85 @@ def action_delete_markers():
 
 # --- Command Mapping ---
 COMMAND_MAP = {
-    'create': {'func': action_create_domain_checks, 'help': 'Ensure checks exist for all domains in file, creating if missing.'},
+    'create': {'func': action_create_domain_checks_from_file, 'help': 'Ensure checks exist for domains (processes file if no domain specified).'},
     'check': {'func': action_check_domains, 'help': 'Check status/expiry for configured domains and ping healthchecks.'},
     'remove-unused': {'func': action_remove_unused_checks, 'help': 'Remove healthchecks from API not found in the local file.'},
     'remove-all': {'func': action_remove_all_checks, 'help': 'DANGER: Remove ALL healthchecks from API and clear local file.'},
     'list-checks': {'func': action_list_checks, 'help': 'List all healthchecks registered in the Healthchecks.io account.'},
     'list-domains': {'func': action_list_domains, 'help': 'List valid domains and their UUIDs configured in the local file.'},
     'delete-markers': {'func': action_delete_markers, 'help': 'Delete temporary expiry check marker files from /tmp.'},
+    # Note: action_create_single_domain is called via argparse logic, not directly via COMMAND_MAP lookup
 }
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Set up parser
+    # Set up the main parser
     parser = argparse.ArgumentParser(
         description="Manage Healthchecks.io domain status and expiry checks.",
-        formatter_class=argparse.RawDescriptionHelpFormatter # Preserve formatting in description
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
-    # Add the positional command argument
-    parser.add_argument(
-        'command',
-        nargs='?',  # Makes the command optional
-        choices=COMMAND_MAP.keys(), # Restrict choices to our defined commands
-        help='The command to run. If omitted, lists available commands.',
-        metavar='COMMAND' # Display 'COMMAND' in help instead of the choice list
+    # Create subparsers for commands
+    subparsers = parser.add_subparsers(
+        dest='command', # Store the command name in 'command'
+        help='Available commands',
+        metavar='COMMAND'
+    )
+    # Make command mandatory by default unless no args are given later
+    # subparsers.required = True # Optional: force a command if args are present
+
+    # --- Define the 'create' subcommand ---
+    create_parser = subparsers.add_parser(
+        'create',
+        help='Ensure checks exist for domains. Processes file if no domain specified.',
+        description='Creates missing healthchecks. If DOMAIN is provided, only processes that domain. Otherwise, processes all entries in the domain file.'
+    )
+    create_parser.add_argument(
+        'domain',
+        nargs='?', # Makes the domain argument optional
+        type=str,
+        help='Optional: A specific domain name to create/update checks for.'
     )
 
-    # Add optional verbose flag maybe?
-    # parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose debug logging.')
+    # --- Define other commands using subparsers ---
+    # (These lines just map existing commands to the subparser structure)
+    check_parser = subparsers.add_parser('check', help=COMMAND_MAP['check']['help'])
+    remove_unused_parser = subparsers.add_parser('remove-unused', help=COMMAND_MAP['remove-unused']['help'])
+    remove_all_parser = subparsers.add_parser('remove-all', help=COMMAND_MAP['remove-all']['help'])
+    list_checks_parser = subparsers.add_parser('list-checks', help=COMMAND_MAP['list-checks']['help'])
+    list_domains_parser = subparsers.add_parser('list-domains', help=COMMAND_MAP['list-domains']['help'])
+    delete_markers_parser = subparsers.add_parser('delete-markers', help=COMMAND_MAP['delete-markers']['help'])
 
+    # Parse arguments
     args = parser.parse_args()
 
-    # Logic to handle command execution or list commands
-    if args.command is None:
+    # --- Updated Execution Logic ---
+    if args.command == 'create':
+        if args.domain:
+            # Call a new function for single domain creation
+            action_create_single_domain(args.domain)
+        else:
+            # Call the existing function for processing the whole file
+            action_create_domain_checks_from_file() # Rename original function
+    elif args.command == 'check':
+        action_check_domains()
+    elif args.command == 'remove-unused':
+        action_remove_unused_checks()
+    elif args.command == 'remove-all':
+        action_remove_all_checks()
+    elif args.command == 'list-checks':
+        action_list_checks()
+    elif args.command == 'list-domains':
+        action_list_domains()
+    elif args.command == 'delete-markers':
+        action_delete_markers()
+    else:
+        # No command was provided (e.g., script run with no arguments)
         print("Available commands:")
-        # Find the longest command name for alignment
         max_len = max(len(cmd) for cmd in COMMAND_MAP.keys())
         for cmd, details in COMMAND_MAP.items():
             print(f"  {cmd:<{max_len}}   {details['help']}")
-        print(f"\nRun '{os.path.basename(__file__)} <COMMAND>' to execute a command.")
-    else:
-        # Execute the selected command
-        command_details = COMMAND_MAP[args.command]
-        function_to_run = command_details['func']
-        try:
-            function_to_run()
-            info(f"Command '{args.command}' completed successfully.")
-        except Exception as e:
-            # Catch unexpected errors during command execution
-            error(f"An unexpected error occurred while running command '{args.command}': {e}")
-            # Optionally add traceback logging here for debugging
-            import traceback
-            error("Traceback:\n" + traceback.format_exc())
-            exit(1) # Exit with error status
+        print(f"\nRun '{os.path.basename(__file__)} <COMMAND> --help' for more info on a command.")
+
+    # --- Removed the previous try...except block that called function_to_run directly ---
+    # --- Error handling is now within the specific action_ functions or the main block if needed ---
