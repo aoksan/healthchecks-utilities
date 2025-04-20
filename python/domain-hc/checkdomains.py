@@ -563,7 +563,7 @@ def action_sync_file():
                     missing_checks_by_name[domain_name]['expiry_uuid'] = uuid
             else:
                 warn(f"Missing API Check UUID '{uuid}' (Name: '{domain_name}') has unexpected tags: '{tags}'. Treating as status for now.")
-                # Default to status if tags are weird, or handle differently
+                # Default to status if tags are non-standard, or handle differently
                 if not missing_checks_by_name[domain_name]['status_uuid']:
                     missing_checks_by_name[domain_name]['status_uuid'] = uuid
 
@@ -665,6 +665,144 @@ def action_check_domains():
             debug(f"Skipping expiry check for {domain_data['domain']} (no expiry UUID configured).")
     info("Finished: Check Domains")
 
+def action_remove_single_domain(domain_to_remove, force=False):
+    """
+    Removes checks associated with a specific domain name from the API
+    and removes the corresponding line from the local domain file.
+    """
+    info(f"Starting: Remove Single Domain '{domain_to_remove}'")
+
+    # 1. Find associated UUIDs from the API (based on name)
+    all_checks_details = get_all_healthchecks_details()
+    if all_checks_details is None:
+        error("Failed to retrieve checks from API. Cannot determine which checks to remove.")
+        return
+
+    uuids_to_delete = []
+    checks_to_delete_info = [] # For logging
+    for check in all_checks_details:
+        # Ensure check is a dict and has 'name' and 'uuid'
+        if isinstance(check, dict) and check.get('name') == domain_to_remove and 'uuid' in check:
+            uuids_to_delete.append(check['uuid'])
+            checks_to_delete_info.append(f"UUID: {check['uuid']}, Tags: [{check.get('tags', '')}]")
+
+    proceed_with_api_delete = False # Default
+    if not uuids_to_delete:
+        info(f"No active checks found in API with name '{domain_to_remove}'. Checking file...")
+        # Proceed to check and potentially remove from the file anyway
+    else:
+        info(f"Found {len(uuids_to_delete)} checks in API matching name '{domain_to_remove}':")
+        for info_line in checks_to_delete_info:
+            print(f"  - {info_line}") # Use print directly, not log, for multi-line info
+
+        if not force:
+            confirm = input(f"Proceed with deleting these {len(uuids_to_delete)} checks from the API? Type 'YES' to confirm: ")
+            if confirm == 'YES':
+                proceed_with_api_delete = True
+            else:
+                info("API deletion cancelled.")
+        else:
+            warn(f"Executing 'remove {domain_to_remove}' with --force flag. Bypassing API deletion confirmation!")
+            proceed_with_api_delete = True # Force flag bypasses prompt
+
+        if proceed_with_api_delete:
+            deleted_count = 0
+            failed_count = 0
+            info("Deleting checks from API...")
+            for uuid in uuids_to_delete:
+                if delete_healthcheck(uuid):
+                    deleted_count += 1
+                else:
+                    failed_count += 1
+            info(f"API Deletion Result: {deleted_count} successful, {failed_count} failed.")
+            if failed_count > 0:
+                warn("Some API deletions failed. The domain might remain partially in the file.")
+
+    # 2. Remove the domain line(s) from the local file
+    raw_lines_data = load_domains_raw()
+    if not raw_lines_data:
+        info("Local domain file is empty or not found. No file update needed.")
+        info(f"Finished: Remove Single Domain '{domain_to_remove}'")
+        return
+
+    processed_file_entries = []
+    found_in_file = False
+    removed_from_file = False
+
+    for line_data in raw_lines_data:
+        original_line = line_data['raw_line']
+        keep_line = True
+
+        if original_line and not original_line.startswith('#'):
+            parts = original_line.split()
+            domain_in_line = parts[0]
+            if domain_in_line == domain_to_remove:
+                info(f"Removing line for '{domain_to_remove}' from {DOMAIN_FILE}: '{original_line}'")
+                keep_line = False
+                found_in_file = True
+                removed_from_file = True
+
+        if keep_line:
+            processed_file_entries.append(original_line) # Keep original line string
+
+    if not found_in_file:
+        info(f"Domain '{domain_to_remove}' was not found in {DOMAIN_FILE}.")
+
+    if removed_from_file:
+        info(f"Rewriting {DOMAIN_FILE} without '{domain_to_remove}'...")
+        try:
+            with open(DOMAIN_FILE, 'w') as outfile:
+                for line in processed_file_entries:
+                    outfile.write(line + "\n")
+            info(f"Successfully updated {DOMAIN_FILE}.")
+        except IOError as e:
+            error(f"Failed to rewrite {DOMAIN_FILE}: {e}")
+    elif found_in_file:
+        # This case shouldn't happen with current logic but is a safety net
+        warn("Domain was found in file but removal logic failed. File not changed.")
+    else:
+        info("No changes needed for the domain file.")
+
+    info(f"Finished: Remove Single Domain '{domain_to_remove}'")
+
+def action_remove_all_checks(force=False):
+    """Removes ALL healthchecks from the account and clears the domain file."""
+    info("Starting: Remove ALL Checks")
+    if not force:
+        confirm = input("WARNING: This will delete ALL healthchecks on the account associated with the API key and clear the domains file. Type 'YES' to confirm: ")
+        if confirm != 'YES':
+            info("Operation cancelled.")
+            return
+    else:
+        warn("Executing 'remove --all' with --force flag. Bypassing confirmation!")
+
+    all_checks_details = get_all_healthchecks_details()
+    deleted_count = 0
+    failed_count = 0
+    if not all_checks_details:
+        info("No healthchecks found to delete.")
+    else:
+        info(f"Deleting {len(all_checks_details)} healthchecks...")
+        for check in all_checks_details:
+            uuid = check['uuid']
+            info(f"  - Attempting delete: {uuid} (Name: {check.get('name', 'N/A')})")
+            if delete_healthcheck(uuid):
+                deleted_count += 1
+            else:
+                failed_count += 1
+        info(f"Finished deletions: {deleted_count} successful, {failed_count} failed.")
+
+    # Clear the domain file (keeping comments if desired, or completely empty)
+    try:
+        with open(DOMAIN_FILE, "w") as f:
+            f.write("# Domain file cleared by remove-all command\n")
+            f.write("# Add new domains in the format: example.com s:<status_uuid> e:<expiry_uuid>\n")
+        info(f"Cleared domain entries in {DOMAIN_FILE}")
+    except IOError:
+        error(f"Could not clear domains file '{DOMAIN_FILE}'.")
+        error("Please check file permissions and disk space.")
+        error("Original file might be unchanged, or partially written.")
+    info("Finished: Remove ALL Checks")
 
 
 def action_remove_unused_checks():
@@ -704,10 +842,6 @@ def action_remove_unused_checks():
              deleted_count += 1
         info(f"Deleted {deleted_count} unused checks.")
     info("Finished: Remove Unused Checks")
-
-
-# ... (rest of the action functions: remove_all, list_checks, list_domains, delete_markers) ...
-# ... (COMMAND_MAP and __main__ block remain the same) ...
 
 # --- Helper Functions needed by other actions ---
 def delete_healthcheck(uuid):
@@ -861,7 +995,7 @@ def check_domain_expiry(domain, expiry_uuid):
         error(f"Could not create/access marker directory {marker_dir}: {e}")
         # Decide whether to continue without marker logic or fail
         # If we can't use markers, maybe we should still proceed, but log it?
-        # For now, let's proceed but it won't update the marker later.
+        # For now, let's proceed, but it won't update the marker later.
         pass # Continue the check
 
     # --- WHOIS Execution ---
@@ -922,42 +1056,6 @@ def check_domain_expiry(domain, expiry_uuid):
         error(f"  ❌ An unexpected error occurred during WHOIS check for {domain}: {e}")
         # Use traceback for more detail if needed: import traceback; traceback.print_exc()
         ping_healthcheck(expiry_uuid + "/fail", payload=f"status=unexpected_error&error={str(e)}")
-def action_remove_all_checks():
-    """Removes ALL healthchecks from the account and clears the domain file."""
-    info("Starting: Remove ALL Checks")
-    confirm = input("WARNING: This will delete ALL healthchecks on the account associated with the API key and clear the domains file. Type 'YES' to confirm: ")
-    if confirm != 'YES':
-        info("Operation cancelled.")
-        return
-
-    all_checks_details = get_all_healthchecks_details()
-    deleted_count = 0
-    failed_count = 0
-    if not all_checks_details:
-        info("No healthchecks found to delete.")
-    else:
-        info(f"Deleting {len(all_checks_details)} healthchecks...")
-        for check in all_checks_details:
-            uuid = check['uuid']
-            info(f"  - Attempting delete: {uuid} (Name: {check.get('name', 'N/A')})")
-            if delete_healthcheck(uuid):
-                deleted_count += 1
-            else:
-                failed_count += 1
-        info(f"Finished deletions: {deleted_count} successful, {failed_count} failed.")
-
-    # Clear the domain file (keeping comments if desired, or completely empty)
-    try:
-        with open(DOMAIN_FILE, "w") as f:
-            f.write("# Domain file cleared by remove-all command\n")
-            f.write("# Add new domains in the format: example.com s:<status_uuid> e:<expiry_uuid>\n")
-        info(f"Cleared domain entries in {DOMAIN_FILE}")
-    except IOError:
-        error(f"Could not clear domains file '{DOMAIN_FILE}'.")
-        error("Please check file permissions and disk space.")
-        error("Original file might be unchanged, or partially written.")
-    info("Finished: Remove ALL Checks")
-
 
 def action_list_checks():
     """Lists all healthchecks found via the API."""
@@ -1028,12 +1126,46 @@ def action_delete_markers():
         error(f"Could not list files in marker directory '{marker_dir}': {e}")
     info("Finished: Delete Expiry Markers")
 
+def action_remove(args):
+    """Dispatcher function for the 'remove' command."""
+    info(f"Executing 'remove' command...")
+    force_flag = args.force # Get the force flag value
+
+    # Priority 1: Specific domain is provided
+    if args.domain:
+        if args.all:
+            warn("Ignoring --all flag because a specific domain was provided.")
+        if args.unused:
+            warn("Ignoring --unused flag because a specific domain was provided.")
+        # Call the function to remove a single domain's checks, passing force flag
+        action_remove_single_domain(args.domain, force=force_flag)
+
+    # Priority 2: "--all" flag is used
+    elif args.all:
+        # Call the function to remove everything, passing force flag
+        action_remove_all_checks(force=force_flag)
+
+    # Priority 3: "--unused" flag is used (No confirmation needed for this one)
+    elif args.unused:
+        if force_flag:
+            # Force doesn't apply to --unused as it has no prompt
+            debug("--force flag has no effect with --unused.")
+        action_remove_unused_checks()
+
+    # Priority 4: 'remove' command used with no domain and no flags
+    else:
+        error("No arguments provided for 'remove'. Specify a domain, --all, or --unused.")
+        print("\nUsage options for 'remove':")
+        print(f"  {os.path.basename(__file__)} remove <domain_name> [-f] # Remove specific domain (force)")
+        print(f"  {os.path.basename(__file__)} remove --unused           # Remove API checks not in file")
+        print(f"  {os.path.basename(__file__)} remove --all [-f]        # DANGER: Remove all checks (force)")
+        exit(1) # Exit with error status
+
 # --- Command Mapping ---
 COMMAND_MAP = {
     'create': {'func': action_create_domain_checks_from_file, 'help': 'Ensure checks exist for domains (processes file if no domain specified).'},
     'check': {'func': action_check_domains, 'help': 'Check status/expiry for configured domains and ping healthchecks.'},
-    'remove-unused': {'func': action_remove_unused_checks, 'help': 'Remove healthchecks from API not found in the local file.'},
-    'remove-all': {'func': action_remove_all_checks, 'help': 'DANGER: Remove ALL healthchecks from API and clear local file.'},
+    'remove': {'func': action_remove, 'help': 'Remove checks from API/file (use --all, --unused, or specify domain).'},
     'list-checks': {'func': action_list_checks, 'help': 'List all healthchecks registered in the Healthchecks.io account.'},
     'list-domains': {'func': action_list_domains, 'help': 'List valid domains and their UUIDs configured in the local file.'},
     'delete-markers': {'func': action_delete_markers, 'help': 'Delete temporary expiry check marker files from /tmp.'},
@@ -1072,14 +1204,41 @@ if __name__ == "__main__":
     )
 
     # --- Define other commands using subparsers ---
-    # (These lines just map existing commands to the subparser structure)
     check_parser = subparsers.add_parser('check', help=COMMAND_MAP['check']['help'])
-    remove_unused_parser = subparsers.add_parser('remove-unused', help=COMMAND_MAP['remove-unused']['help'])
-    remove_all_parser = subparsers.add_parser('remove-all', help=COMMAND_MAP['remove-all']['help'])
     list_checks_parser = subparsers.add_parser('list-checks', help=COMMAND_MAP['list-checks']['help'])
     list_domains_parser = subparsers.add_parser('list-domains', help=COMMAND_MAP['list-domains']['help'])
     delete_markers_parser = subparsers.add_parser('delete-markers', help=COMMAND_MAP['delete-markers']['help'])
     sync_file_parser = subparsers.add_parser('sync-file', help=COMMAND_MAP['sync-file']['help'])
+
+    # --- Define the merged 'remove' subcommand ---
+    remove_parser = subparsers.add_parser(
+        'remove',
+        help='Remove checks from API and/or file. See remove --help.',
+        description='Removes healthchecks based on arguments provided.'
+    )
+    # --- Add mutually exclusive flags for --all and --unused ---
+    remove_group = remove_parser.add_mutually_exclusive_group()
+    remove_group.add_argument(
+        '--all',
+        action='store_true',
+        help='DANGER: Remove ALL checks from API and clear local file.'
+    )
+    remove_group.add_argument(
+        '--unused',
+        action='store_true',
+        help='Remove API checks that are NOT listed in the local file.'
+    )
+    remove_parser.add_argument(
+        'domain',
+        nargs='?', # Optional positional argument
+        type=str,
+        help='Optional: A specific domain name whose checks should be removed from API and file. Overrides --all and --unused.'
+    )
+    remove_parser.add_argument(
+        '-f', '--force',
+        action='store_true',
+        help='Bypass confirmation prompts for deletion (--all or specific domain).'
+    )
 
     # Parse arguments
     args = parser.parse_args()
@@ -1092,12 +1251,10 @@ if __name__ == "__main__":
         else:
             # Call the existing function for processing the whole file
             action_create_domain_checks_from_file() # Rename original function
+    elif args.command == 'remove':
+        action_remove(args) # Pass the parsed args to the dispatcher
     elif args.command == 'check':
         action_check_domains()
-    elif args.command == 'remove-unused':
-        action_remove_unused_checks()
-    elif args.command == 'remove-all':
-        action_remove_all_checks()
     elif args.command == 'list-checks':
         action_list_checks()
     elif args.command == 'list-domains':
