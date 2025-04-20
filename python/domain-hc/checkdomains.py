@@ -17,6 +17,7 @@ API_URL = os.getenv("API_URL", "https://healthchecks.io/api/v3/")
 API_KEY = os.getenv("API_KEY")
 BASE_URL = os.getenv("BASE_URL", "https://hc-ping.com")
 DOMAIN_FILE = os.getenv("DOMAIN_FILE", os.path.join(SCRIPT_DIR, "domains.txt"))
+MARKER_DIR = "/tmp/domain-hc-markers" # Default marker directory path
 # Use script directory as a base path for domains.txt if not specified in environment
 
 # Simple validation for API_KEY
@@ -973,12 +974,11 @@ def check_domain_expiry(domain, expiry_uuid):
     # --- End Subdomain Check ---
 
     # Marker file logic to avoid checking *root* domains too frequently
-    marker_dir = "/tmp/domain-hc-markers" # Use a dedicated subdir
-    marker_file = os.path.join(marker_dir, f"expiry_check_{re.sub(r'[^a-zA-Z0-9.-]+', '_', domain)}") # Allow `.` and `-`
+    marker_file = os.path.join(MARKER_DIR, f"expiry_check_{re.sub(r'[^a-zA-Z0-9.-]+', '_', domain)}") # Allow `.` and `-`
     seven_days_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7) # Use UTC now
 
     try:
-        os.makedirs(marker_dir, exist_ok=True) # Ensure marker directory exists
+        os.makedirs(MARKER_DIR, exist_ok=True) # Ensure marker directory exists
         if os.path.exists(marker_file):
             try:
                 marker_timestamp = os.path.getmtime(marker_file)
@@ -992,9 +992,9 @@ def check_domain_expiry(domain, expiry_uuid):
                 warn(f"Could not read or interpret marker file timestamp for {marker_file}: {e}")
                 # Proceed with check if marker reading fails
     except OSError as e:
-        error(f"Could not create/access marker directory {marker_dir}: {e}")
+        error(f"Could not create/access marker directory {MARKER_DIR}: {e}")
         # Decide whether to continue without marker logic or fail
-        # If we can't use markers, maybe we should still proceed, but log it?
+        # If we can't use markers, mayaction_delete_markersbe we should still proceed, but log it?
         # For now, let's proceed, but it won't update the marker later.
         pass # Continue the check
 
@@ -1102,16 +1102,15 @@ def action_list_domains():
 def action_delete_markers():
     """Deletes the temporary expiry check marker files."""
     info("Starting: Delete Expiry Markers")
-    marker_dir = "/tmp/domain-hc-markers"
     deleted_count = 0
-    if not os.path.isdir(marker_dir):
-        info(f"Marker directory '{marker_dir}' does not exist. Nothing to delete.")
+    if not os.path.isdir(MARKER_DIR):
+        info(f"Marker directory '{MARKER_DIR}' does not exist. Nothing to delete.")
         return
 
     try:
-        for filename in os.listdir(marker_dir):
+        for filename in os.listdir(MARKER_DIR):
             if filename.startswith("expiry_check_"):
-                file_path = os.path.join(marker_dir, filename)
+                file_path = os.path.join(MARKER_DIR, filename)
                 try:
                     os.remove(file_path)
                     info(f"  - Deleted marker: {file_path}")
@@ -1119,11 +1118,11 @@ def action_delete_markers():
                 except OSError as e:
                     error(f"Could not delete marker file '{file_path}': {e}")
         if deleted_count == 0:
-            info(f"No marker files found matching 'expiry_check_*' in {marker_dir}.")
+            info(f"No marker files found matching 'expiry_check_*' in {MARKER_DIR}.")
         else:
-            info(f"Deleted {deleted_count} marker files from {marker_dir}.")
+            info(f"Deleted {deleted_count} marker files from {MARKER_DIR}.")
     except OSError as e:
-        error(f"Could not list files in marker directory '{marker_dir}': {e}")
+        error(f"Could not list files in marker directory '{MARKER_DIR}': {e}")
     info("Finished: Delete Expiry Markers")
 
 def action_remove(args):
