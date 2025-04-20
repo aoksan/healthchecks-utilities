@@ -99,7 +99,7 @@ def create_healthcheck(domain, check_type):
     if check_type == 'status':
         data['tz'] = 'Europe/Istanbul'
         data['schedule'] = '*/5 * * * *' # 5-minute interval
-        data['grace'] = 60  # 1-minute grace
+        data['grace'] = 3600  # 1-hour grace
     elif check_type == 'expiry':
         data['timeout'] = 3600 * 24 * 7 # 7-day timeout
         data['grace'] = 3600 * 24 # 1-day grace
@@ -321,6 +321,7 @@ def action_create_domain_checks_from_file():
         new_expiry_uuid = None
         if not current_expiry_uuid:
             # Determine if it's a subdomain (adjust the dot count threshold if needed)
+            # TODO Handle doable root domains (e.g. .com.tr, .org.uk, etc.)
             is_subdomain = domain.count('.') > 1 # More than 2 dots
 
             if is_subdomain:
