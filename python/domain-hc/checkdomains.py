@@ -1189,8 +1189,7 @@ COMMAND_MAP = {
     'list-checks': {'func': action_list_checks, 'help': 'List all healthchecks registered in the Healthchecks.io account.'},
     'list-domains': {'func': action_list_domains, 'help': 'List valid domains and their UUIDs configured in the local file.'},
     'delete-markers': {'func': action_delete_markers, 'help': 'Delete temporary expiry check marker files from /tmp.'},
-    'sync-file': {'func': action_sync_file, 'help': 'Removes non-existent UUIDs from the local domains file.'}
-    # Note: action_create_single_domain is called via argparse logic, not directly via COMMAND_MAP lookup
+    'sync-file': {'func': action_sync_file, 'help': 'Syncs local file with API: removes invalid UUIDs from file & adds missing API checks to file.'}    # Note: action_create_single_domain is called via argparse logic, not directly via COMMAND_MAP lookup
 }
 
 # --- Main Execution ---
