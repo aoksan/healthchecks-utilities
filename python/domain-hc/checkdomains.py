@@ -447,7 +447,10 @@ def action_create_domain_checks_from_file(status_only=False, expiry_only=False):
 
 # --- load_domains (keep the original one for other commands) ---
 def load_domains():
-    """Loads domain configurations from the DOMAIN_FILE, skipping invalid."""
+    """
+    Loads domain configurations from the DOMAIN_FILE.
+    A line is considered valid if it contains a domain and at least one UUID (s: or e:).
+    """
     domains = []
     try:
         with open(DOMAIN_FILE, 'r') as f:
@@ -456,26 +459,34 @@ def load_domains():
                 line = line.strip()
                 if line and not line.startswith('#'):
                     parts = line.split()
-                    # --- Change: Require at least domain and s:uuid ---
-                    if len(parts) >= 2 and any(p.startswith('s:') for p in parts):
-                        domain = parts[0]
-                        status_uuid = None
-                        expiry_uuid = None
+                    domain = parts[0]
+                    status_uuid = None
+                    expiry_uuid = None
+                    has_s_uuid = False
+                    has_e_uuid = False
+
+                    # Check minimum parts (domain + at least one uuid part)
+                    if len(parts) >= 2:
                         for part in parts[1:]:
-                            if part.startswith('s:'):
+                            if part.startswith('s:') and len(part) > 2: # Check if uuid part is not empty
                                 status_uuid = part.split(':', 1)[1]
-                            elif part.startswith('e:'):
+                                has_s_uuid = True
+                            elif part.startswith('e:') and len(part) > 2: # Check if uuid part is not empty
                                 expiry_uuid = part.split(':', 1)[1]
+                                has_e_uuid = True
 
-                        # If status_uuid is somehow still None after check above, something is wrong
-                        if not status_uuid:
-                             warn(f"Internal inconsistency on line {line_num} parsing: '{line}'. Skipping.")
-                             continue
-
-                        domains.append({'domain': domain, 'status_uuid': status_uuid, 'expiry_uuid': expiry_uuid or ""})
-                    else:
-                         # Warn if the line has content but not the required s:uuid
-                         warn(f"Skipping invalid line {line_num}: '{line}' in {DOMAIN_FILE}. Expected format: domain s:<uuid> [e:<uuid>]")
+                    # --- Updated Validation Logic ---
+                    # Line is valid if it has a domain and EITHER s:uuid OR e:uuid
+                    if domain and (has_s_uuid or has_e_uuid):
+                        domains.append({
+                            'domain': domain,
+                            'status_uuid': status_uuid or "", # Store "" if None
+                            'expiry_uuid': expiry_uuid or ""  # Store "" if None
+                        })
+                    # --- Updated Warning Message ---
+                    # Warn only if line has content but doesn't meet the new criteria
+                    elif domain and not (has_s_uuid or has_e_uuid):
+                        warn(f"Skipping invalid line {line_num}: '{line}' in {DOMAIN_FILE}. Expected format: domain [s:<uuid>] [e:<uuid>] (at least one UUID required)")
 
     except FileNotFoundError:
         warn(f"Domains file '{DOMAIN_FILE}' not found. No domains loaded.")
@@ -713,15 +724,20 @@ def check_domain_status(domain, status_uuid):
 def action_check_domains():
     """Runs status and expiry checks for all configured domains."""
     info("Starting: Check Domains")
-    domains = load_domains() # Uses the version that skips invalid lines
+    domains = load_domains() # Uses the updated version that accepts s: or e:
     if not domains:
         warn("No valid domains loaded to check.")
         return
     for domain_data in domains:
         info(f"--- Processing {domain_data['domain']} ---")
-        # This call will now work because the function is defined
-        check_domain_status(domain_data['domain'], domain_data['status_uuid'])
-        if domain_data.get('expiry_uuid'): # Check if expiry UUID exists and is not empty
+        # Check if status UUID exists AND is not empty string before checking status
+        if domain_data.get('status_uuid'):
+            check_domain_status(domain_data['domain'], domain_data['status_uuid'])
+        else:
+            debug(f"Skipping status check for {domain_data['domain']} (no status UUID configured).")
+
+        # Check if expiry UUID exists AND is not empty string before checking expiry
+        if domain_data.get('expiry_uuid'):
             check_domain_expiry(domain_data['domain'], domain_data['expiry_uuid'])
         else:
             debug(f"Skipping expiry check for {domain_data['domain']} (no expiry UUID configured).")
