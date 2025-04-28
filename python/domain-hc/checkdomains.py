@@ -152,12 +152,12 @@ def load_domains_raw():
         error(f"Could not read domains file '{DOMAIN_FILE}'.")
     return lines_data
 
-def action_create_single_domain(domain_to_process):
+def action_create_single_domain(domain_to_process, status_only=False, expiry_only=False):
     """
     Ensures healthchecks exist for a SINGLE specified domain and adds/updates
-    its entry in the domain file.
+    its entry in the domain file, respecting creation flags.
     """
-    info(f"Starting: Create Single Domain Checks for '{domain_to_process}'")
+    info(f"Starting: Create Single Domain Checks for '{domain_to_process}' (StatusOnly: {status_only}, ExpiryOnly: {expiry_only})") # Log flags
     raw_lines_data = load_domains_raw()
     processed_domains = []
     domain_found = False
@@ -197,8 +197,8 @@ def action_create_single_domain(domain_to_process):
                 target_status_uuid = current_status_uuid
                 target_expiry_uuid = current_expiry_uuid
 
-                # Create missing STATUS check
-                if not target_status_uuid:
+                # --- Create missing STATUS check (unless --expiry-only) ---
+                if not expiry_only and not target_status_uuid:
                     warn(f"Existing entry for '{domain_to_process}' is missing status UUID. Creating...")
                     new_status_uuid = create_healthcheck(domain_to_process, 'status')
                     if new_status_uuid:
@@ -208,48 +208,83 @@ def action_create_single_domain(domain_to_process):
                     else:
                         warn(f"Failed to create status check for '{domain_to_process}'.")
 
-                # Create missing EXPIRY check (if applicable)
-                if not target_expiry_uuid:
-                    if target_is_subdomain:
-                        info(f"Skipping EXPIRY check creation for apparent subdomain: {domain_to_process}")
-                    elif target_status_uuid: # Only create if status is present
+                # --- Create missing EXPIRY check (unless --status-only) ---
+                if not status_only and not target_expiry_uuid:
+                    create_expiry = False
+                    reason = ""
+                    if expiry_only: # Explicitly asked for expiry, ignore subdomain/status rules
+                        create_expiry = True
+                        reason = "--expiry-only flag provided"
+                        info(f"Attempting expiry check creation for '{domain_to_process}' due to {reason}.")
+                    elif target_is_subdomain:
+                        reason = "apparent subdomain"
+                        info(f"Skipping EXPIRY check creation for {reason}: {domain_to_process}")
+                    elif target_status_uuid: # Default case: status exists, not subdomain
+                        create_expiry = True
+                        reason = "missing expiry UUID (default behavior)"
                         warn(f"Existing entry for '{domain_to_process}' is missing expiry UUID. Creating...")
+                    else: # Default case: status missing
+                        reason = "status check is missing or failed"
+                        warn(f"Skipping expiry check creation for '{domain_to_process}' because {reason}.")
+
+                    if create_expiry:
                         new_expiry_uuid = create_healthcheck(domain_to_process, 'expiry')
                         if new_expiry_uuid:
                             target_expiry_uuid = new_expiry_uuid
                             entry['expiry_uuid'] = target_expiry_uuid # Update entry for rewrite
                             updated = True
                         else:
-                            warn(f"Failed to create expiry check for '{domain_to_process}'.")
-                    else:
-                        warn(f"Skipping expiry check creation for '{domain_to_process}' because status check is missing or failed.")
+                            warn(f"Failed to create expiry check for '{domain_to_process}' (reason: {reason}).")
 
         processed_domains.append(entry) # Add the processed/preserved line
 
     # If the domain was not found in the file, create checks and add it
     if not domain_found:
         info(f"Domain '{domain_to_process}' not found in {DOMAIN_FILE}. Creating new entry...")
-        target_status_uuid = create_healthcheck(domain_to_process, 'status')
-        if target_status_uuid:
-            updated = True # Need to write the new entry
-            if not target_is_subdomain:
+        # Create status check (unless --expiry-only)
+        if not expiry_only:
+            target_status_uuid = create_healthcheck(domain_to_process, 'status')
+            if target_status_uuid:
+                updated = True # Need to write the new entry
+            else:
+                error(f"Failed to create initial status check for new domain '{domain_to_process}'.")
+
+        # Create expiry check (unless --status-only)
+        if not status_only:
+            create_expiry = False
+            reason = ""
+            if expiry_only: # Explicitly asked for expiry
+                create_expiry = True
+                reason = "--expiry-only flag provided"
+                info(f"Attempting expiry check creation for new domain '{domain_to_process}' due to {reason}.")
+            elif target_is_subdomain:
+                reason = "apparent subdomain"
+                info(f"Skipping EXPIRY check creation for new {reason}: {domain_to_process}")
+            elif target_status_uuid: # Status check was created successfully above
+                create_expiry = True
+                reason = "default behavior for new domain"
+            else: # Status check creation failed
+                reason = "status check creation failed"
+                warn(f"Skipping expiry check creation for new domain '{domain_to_process}' because {reason}.")
+
+            if create_expiry:
                 target_expiry_uuid = create_healthcheck(domain_to_process, 'expiry')
                 if target_expiry_uuid:
                     updated = True
                 else:
-                    warn(f"Failed to create expiry check for new domain '{domain_to_process}'.")
-            else:
-                info(f"Skipping EXPIRY check creation for new apparent subdomain: {domain_to_process}")
+                    warn(f"Failed to create expiry check for new domain '{domain_to_process}' (reason: {reason}).")
 
-            # Add the new domain entry to the list for writing
+        # Add the new domain entry to the list for writing (only if at least one check was created)
+        if target_status_uuid or target_expiry_uuid:
             processed_domains.append({
                 'type': 'domain',
                 'domain': domain_to_process,
                 'status_uuid': target_status_uuid,
                 'expiry_uuid': target_expiry_uuid
             })
-        else:
-            error(f"Failed to create initial status check for new domain '{domain_to_process}'. Cannot add to file.")
+            updated = True # Ensure file is written if we add a new line
+        elif not expiry_only and not status_only: # Only log error if default create failed completely
+            error(f"Failed to create any checks for new domain '{domain_to_process}'. Cannot add to file.")
 
 
     # Rewrite the file only if changes were made or a new domain was added
@@ -262,9 +297,14 @@ def action_create_single_domain(domain_to_process):
                         outfile.write(entry['content'] + "\n")
                     elif entry['type'] == 'domain':
                         line_parts = [entry['domain']]
-                        if entry['status_uuid']: line_parts.append(f"s:{entry['status_uuid']}")
-                        if entry['expiry_uuid']: line_parts.append(f"e:{entry['expiry_uuid']}")
-                        outfile.write(" ".join(line_parts) + "\n")
+                        # Only add UUIDs if they exist (respecting --status-only/--expiry-only)
+                        if entry.get('status_uuid'): line_parts.append(f"s:{entry['status_uuid']}")
+                        if entry.get('expiry_uuid'): line_parts.append(f"e:{entry['expiry_uuid']}")
+                        # Only write if at least one UUID is present
+                        if len(line_parts) > 1:
+                            outfile.write(" ".join(line_parts) + "\n")
+                        else:
+                            warn(f"Skipping write for '{entry['domain']}' as no UUIDs were present or created.")
             info(f"Successfully updated {DOMAIN_FILE} for '{domain_to_process}'.")
         except IOError as e:
             error(f"Failed to rewrite {DOMAIN_FILE}: {e}")
@@ -273,13 +313,12 @@ def action_create_single_domain(domain_to_process):
 
     info(f"Finished: Create Single Domain Checks for '{domain_to_process}'")
 
-def action_create_domain_checks_from_file():
+def action_create_domain_checks_from_file(status_only=False, expiry_only=False):
     """
-    Reads the domain file, creates missing healthchecks (status for all, expiry only for non-subdomains),
-    and rewrites the file with updated info.
-    (Processes ENTIRE file)
+    Reads the domain file, creates missing healthchecks respecting flags,
+    and rewrites the file with updated info. (Processes ENTIRE file)
     """
-    info("Starting: Create Domain Checks (Processing File)")
+    info(f"Starting: Create Domain Checks (Processing File, StatusOnly: {status_only}, ExpiryOnly: {expiry_only})") # Log flags
     raw_lines_data = load_domains_raw()
     if not raw_lines_data:
         info("Domain file is empty or not found. Nothing to create.")
@@ -315,9 +354,8 @@ def action_create_domain_checks_from_file():
             elif part.startswith('e:'):
                 current_expiry_uuid = part.split(':', 1)[1]
 
-        # --- Create missing STATUS check (always attempt if missing) ---
-        new_status_uuid = None
-        if not current_status_uuid:
+        # --- Create missing STATUS check (unless --expiry-only) ---
+        if not expiry_only and not current_status_uuid:
             warn(f"Domain '{domain}' (line {line_num}) is missing status UUID. Creating...")
             new_status_uuid = create_healthcheck(domain, 'status')
             if new_status_uuid:
@@ -326,37 +364,47 @@ def action_create_domain_checks_from_file():
             else:
                 warn(f"Failed to create status check for '{domain}'. It will remain without a status UUID in the file.")
 
-        # --- Create missing EXPIRY check (only if needed AND not a subdomain) ---
-        new_expiry_uuid = None
-        if not current_expiry_uuid:
-            # Determine if it's a subdomain (adjust the dot count threshold if needed)
-            # TODO Handle doable root domains (e.g. .com.tr, .org.uk, etc.)
-            is_subdomain = domain.count('.') > 1 # More than 2 dots
+        # --- Create missing EXPIRY check (unless --status-only) ---
+        if not status_only and not current_expiry_uuid:
+            create_expiry = False
+            reason = ""
+            # Determine if it's a subdomain (needed for default case)
+            is_subdomain = domain.count('.') > 1 # More than 1 dot
 
-            if is_subdomain:
-                info(f"Skipping EXPIRY check creation for apparent subdomain: {domain} (line {line_num})")
-                # Ensure current_expiry_uuid remains None or empty
-                current_expiry_uuid = None
-            elif current_status_uuid: # Only create expiry if status is present (newly created or existing)
+            if expiry_only: # Explicitly asked for expiry
+                create_expiry = True
+                reason = "--expiry-only flag provided"
+                info(f"Attempting expiry check creation for '{domain}' (line {line_num}) due to {reason}.")
+            elif is_subdomain:
+                reason = "apparent subdomain"
+                info(f"Skipping EXPIRY check creation for {reason}: {domain} (line {line_num})")
+            elif current_status_uuid: # Default case: status exists, not subdomain
+                create_expiry = True
+                reason = "missing expiry UUID (default behavior)"
                 warn(f"Domain '{domain}' (line {line_num}) is missing expiry UUID and is not a subdomain. Creating...")
+            else: # Default case: status missing
+                reason = "status check is missing or failed"
+                warn(f"Skipping expiry check creation for '{domain}' (line {line_num}) because {reason}.")
+
+            if create_expiry:
                 new_expiry_uuid = create_healthcheck(domain, 'expiry')
                 if new_expiry_uuid:
                     current_expiry_uuid = new_expiry_uuid # Update with the new UUID
                     updated = True
                 else:
-                    warn(f"Failed to create expiry check for '{domain}'. It will remain without an expiry UUID.")
-            else:
-                # Status check creation failed or was missing, so don't create expiry either
-                warn(f"Skipping expiry check creation for '{domain}' because status check creation failed or was missing.")
-                current_expiry_uuid = None
+                    warn(f"Failed to create expiry check for '{domain}' (reason: {reason}). It will remain without an expiry UUID.")
+            # else: # No need for else, current_expiry_uuid remains None if create_expiry is false
 
+        # --- Final state for this domain ---
+        final_status_uuid = current_status_uuid if not expiry_only else None # Nullify if only expiry was wanted
+        final_expiry_uuid = current_expiry_uuid if not status_only else None # Nullify if only status was wanted
 
-        # Store the final state for this domain for rewriting
         processed_domains.append({
             'type': 'domain',
             'domain': domain,
-            'status_uuid': current_status_uuid,
-            'expiry_uuid': current_expiry_uuid # This will be None if skipped/failed
+            # Use the potentially nullified values based on flags
+            'status_uuid': final_status_uuid,
+            'expiry_uuid': final_expiry_uuid
         })
 
     # --- Rewrite the entire domain file ---
@@ -369,15 +417,19 @@ def action_create_domain_checks_from_file():
                         outfile.write(entry['content'] + "\n")
                     elif entry['type'] == 'domain':
                         line_parts = [entry['domain']]
-                        # Only add s: if status_uuid exists
+                        # Only add UUIDs if they exist after flag logic
                         if entry['status_uuid']:
                             line_parts.append(f"s:{entry['status_uuid']}")
-                        else:
-                            warn(f"Note: Domain '{entry['domain']}' ended up without a status UUID in the final output.")
-                        # Only add e: if expiry_uuid exists
                         if entry['expiry_uuid']:
                             line_parts.append(f"e:{entry['expiry_uuid']}")
-                        outfile.write(" ".join(line_parts) + "\n")
+
+                        # Only write the line if it has at least one UUID
+                        if len(line_parts) > 1:
+                            outfile.write(" ".join(line_parts) + "\n")
+                        else:
+                            # Log if a domain line ends up with no UUIDs due to flags or failures
+                            warn(f"Note: Domain '{entry['domain']}' ended up without any UUIDs in the final output (check flags/creation logs). Skipping write for this line.")
+
             info(f"Successfully rewrote {DOMAIN_FILE}.")
         except IOError as e:
             error(f"Failed to rewrite {DOMAIN_FILE}: {e}")
@@ -387,7 +439,6 @@ def action_create_domain_checks_from_file():
         info("No new UUIDs were successfully created or file structure changes needed. Domain file remains unchanged.")
 
     info("Finished: Create Domain Checks (Processing File)")
-
 
 # --- Other action_ functions (check_domains, remove_unused, etc.) ---
 # Need to be reviewed to ensure they use the corrected load_domains or handle
@@ -1221,6 +1272,19 @@ if __name__ == "__main__":
         type=str,
         help='Optional: A specific domain name to create/update checks for.'
     )
+    # --- Add mutually exclusive flags for check types ---
+    create_flags_group = create_parser.add_mutually_exclusive_group()
+    create_flags_group.add_argument(
+        '--status-only',
+        action='store_true',
+        help='Only create/ensure the status check exists for the specified domain(s).'
+    )
+    create_flags_group.add_argument(
+        '--expiry-only',
+        action='store_true',
+        help='Only create/ensure the expiry check exists for the specified domain(s) (ignores subdomain rule).'
+    )
+
 
     # --- Define other commands using subparsers ---
     check_parser = subparsers.add_parser('check', help=COMMAND_MAP['check']['help'])
@@ -1265,11 +1329,11 @@ if __name__ == "__main__":
     # --- Updated Execution Logic ---
     if args.command == 'create':
         if args.domain:
-            # Call a new function for single domain creation
-            action_create_single_domain(args.domain)
+            # Call function for single domain creation with flags
+            action_create_single_domain(args.domain, status_only=args.status_only, expiry_only=args.expiry_only)
         else:
-            # Call the existing function for processing the whole file
-            action_create_domain_checks_from_file() # Rename original function
+            # Call function for processing the whole file with flags
+            action_create_domain_checks_from_file(status_only=args.status_only, expiry_only=args.expiry_only)
     elif args.command == 'remove':
         action_remove(args) # Pass the parsed args to the dispatcher
     elif args.command == 'check':
