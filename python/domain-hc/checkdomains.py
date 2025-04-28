@@ -992,7 +992,7 @@ def ping_healthcheck(uuid, endpoint_suffix="", payload=None):
     except requests.exceptions.RequestException as e:
         error(f"Ping failed ({method}): {ping_url} - {e}")
 
-def _parse_whois_expiry(whois_output):
+def _parse_expiry_from_whois(whois_output):
     """Attempts to parse the expiry date from WHOIS output."""
     # Common patterns for expiry dates - add more as needed
     patterns = [
@@ -1091,7 +1091,7 @@ def check_domain_expiry(domain, expiry_uuid):
         debug(f"WHOIS output for {domain}:\n{whois_output[:500]}...") # Log truncated output
 
         # --- Expiry Parsing ---
-        expiry_date = _parse_whois_expiry(whois_output)
+        expiry_date = _parse_expiry_from_whois(whois_output)
 
         if expiry_date:
             info(f"  ✓ Parsed Expiry Date for {domain}: {expiry_date.strftime('%Y-%m-%d')}")
