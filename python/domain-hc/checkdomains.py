@@ -20,10 +20,22 @@ DOMAIN_FILE = os.getenv("DOMAIN_FILE", os.path.join(SCRIPT_DIR, "domains.txt"))
 MARKER_DIR = "/tmp/domain-hc-markers" # Default marker directory path
 # Use script directory as a base path for domains.txt if not specified in environment
 
+# --- GoDaddy Config ---
+GODADDY_API_KEY = os.getenv("GODADDY_API_KEY")
+GODADDY_API_SECRET = os.getenv("GODADDY_API_SECRET")
+# Use Test API by default, can be overridden via .env if needed
+GODADDY_API_URL = os.getenv("GODADDY_API_URL", "https://api.ote-godaddy.com/")
+
 # Simple validation for API_KEY
 if not API_KEY:
     print("ERROR: API_KEY environment variable not set. Please set it or create a .env file.")
     exit(1)
+
+# --- Optional: Warn if GoDaddy keys are missing, as the fallback won't work ---
+# We'll check within the function instead to allow running without GoDaddy configured
+if not GODADDY_API_KEY or not GODADDY_API_SECRET:
+    print("WARN: GODADDY_API_KEY or GODADDY_API_SECRET not set. GoDaddy API fallback for expiry checks will be disabled.")
+
 
 # --- Helper Functions ---
 def log(level, message):
@@ -992,6 +1004,70 @@ def ping_healthcheck(uuid, endpoint_suffix="", payload=None):
     except requests.exceptions.RequestException as e:
         error(f"Ping failed ({method}): {ping_url} - {e}")
 
+def _get_expiry_from_godaddy(domain):
+    """Retrieves domain expiry date from GoDaddy API."""
+    if not GODADDY_API_KEY or not GODADDY_API_SECRET:
+        debug(f"GoDaddy API Key/Secret not configured. Skipping GoDaddy lookup for {domain}.")
+        return None
+
+    url = f"{GODADDY_API_URL.rstrip('/')}/v1/domains/{domain}"
+    headers = {
+        'Authorization': f'sso-key {GODADDY_API_KEY}:{GODADDY_API_SECRET}',
+        'Accept': 'application/json'
+    }
+    debug(f"Attempting GoDaddy API lookup for {domain} at {url}")
+
+    try:
+        response = requests.get(url, headers=headers, timeout=20) # Increased timeout slightly for API
+
+        # Handle common errors
+        if response.status_code == 404:
+            info(f"  ℹ️ Domain {domain} not found in this GoDaddy account (API returned 404).")
+            return None
+        elif response.status_code == 401 or response.status_code == 403:
+            error(f"  ❌ GoDaddy API Authentication/Authorization failed ({response.status_code}). Check API Key/Secret.")
+            return None
+        elif response.status_code == 429:
+            warn(f"  ⚠️ GoDaddy API rate limit hit while checking {domain}. Try again later.")
+            return None
+
+        response.raise_for_status() # Raise HTTPError for other bad responses (5xx, other 4xx)
+
+        response_data = response.json()
+        expiry_str = response_data.get('expires')
+
+        if not expiry_str:
+            warn(f"  ⚠️ 'expires' field not found in GoDaddy API response for {domain}.")
+            debug(f"GoDaddy Response Body: {response_data}")
+            return None
+
+        # Parse the ISO 8601 date string
+        try:
+            # Remove 'Z' and add timezone info for fromisoformat compatibility if needed
+            if expiry_str.endswith('Z'):
+                expiry_str = expiry_str[:-1] + '+00:00'
+            dt_aware = datetime.datetime.fromisoformat(expiry_str)
+            # Ensure it's UTC
+            dt_aware_utc = dt_aware.astimezone(datetime.timezone.utc)
+            return dt_aware_utc
+        except ValueError:
+            error(f"  ❌ Could not parse expiry date string '{expiry_str}' from GoDaddy API response for {domain}.")
+            return None
+
+    except requests.exceptions.Timeout:
+        error(f"  ❌ GoDaddy API request timed out for {domain}")
+    except requests.exceptions.RequestException as e:
+        error(f"  ❌ GoDaddy API request error for {domain}: {e}")
+        if e.response is not None:
+            error(f"  GoDaddy API Response ({e.response.status_code}): {e.response.text}")
+    except json.JSONDecodeError:
+        error(f"  ❌ Failed to decode JSON response from GoDaddy API for {domain}.")
+        debug(f"GoDaddy Raw Response: {response.text}")
+    except Exception as e:
+        error(f"  ❌ Unexpected error during GoDaddy API call for {domain}: {e}")
+
+    return None # Indicate failure
+
 def _parse_expiry_from_whois(whois_output):
     """Attempts to parse the expiry date from WHOIS output."""
     # Common patterns for expiry dates - add more as needed
@@ -1001,7 +1077,12 @@ def _parse_expiry_from_whois(whois_output):
         # General patterns (capture value after the label)
         r'(?:Registry Expiry Date|Expiration Date|Expiry Date|paid-till):\s*(\S+)',
         r'expires:\s*(\S+)',
-        r'Expiration Time:\s*(\S+)'
+        r'Expiration Time:\s*(\S+)',
+        # --- Add patterns for specific TLDs if known ---
+        # Example for a hypothetical .de format if it was 'Changed: YYYYMMDD'
+        # r'Changed:\s*(\d{8})',
+        # Example for a hypothetical .nl format if it was 'expire date: YYYY-MM-DD'
+        # r'expire date:\s*(\d{4}-\d{2}-\d{2})',
     ]
     for pattern in patterns:
         match = re.search(pattern, whois_output, re.IGNORECASE)
@@ -1012,9 +1093,10 @@ def _parse_expiry_from_whois(whois_output):
             formats_to_try = [
                 ('%Y-%m-%dT%H:%M:%SZ', True), # Explicit UTC via Z
                 ('%Y-%m-%d', False),
-                ('%d-%b-%Y', False),
+                ('%d-%b-%Y', False), # e.g., 01-Jan-2025
                 ('%Y.%m.%d', False),
                 ('%d/%m/%Y', False),
+                ('%Y%m%d', False), # Example for YYYYMMDD from hypothetical 'Changed:'
                 # Add other common formats if needed
             ]
             for fmt, is_explicit_utc in formats_to_try:
@@ -1028,14 +1110,14 @@ def _parse_expiry_from_whois(whois_output):
                     return dt_aware
                 except ValueError:
                     continue
-            warn(f"Could not parse matched date string: '{date_str}' with known formats.")
+            warn(f"Could not parse matched WHOIS date string: '{date_str}' with known formats.")
             return None # Matched but couldn't parse
 
     debug("No expiry date pattern matched in WHOIS output.")
     return None # No pattern matched
 
 def check_domain_expiry(domain, expiry_uuid):
-    """Checks domain expiry using WHOIS and pings the expiry healthcheck. Skips WHOIS for subdomains."""
+    """Checks domain expiry using WHOIS (with GoDaddy API fallback) and pings the expiry healthcheck."""
     info(f"Checking expiry for {domain}...")
 
     # --- Subdomain Check ---
@@ -1043,19 +1125,16 @@ def check_domain_expiry(domain, expiry_uuid):
     # Adjust this threshold if needed (e.g., > 2 for domain.co.uk handling)
     is_subdomain = domain.count('.') > 1
     if is_subdomain:
-        info(f"  ↪ Skipping WHOIS lookup for apparent subdomain: {domain}")
-        # Ping success to keep the check alive on Healthchecks.io, but note it was skipped
+        info(f"  ↪ Skipping WHOIS/API lookup for apparent subdomain: {domain}")
         ping_healthcheck(expiry_uuid, payload="status=skipped_subdomain")
-        # We don't need marker logic for skipped subdomains as no check is performed
-        return # Exit the function early
-    # --- End Subdomain Check ---
+        return
 
-    # Marker file logic to avoid checking *root* domains too frequently
-    marker_file = os.path.join(MARKER_DIR, f"expiry_check_{re.sub(r'[^a-zA-Z0-9.-]+', '_', domain)}") # Allow `.` and `-`
-    seven_days_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7) # Use UTC now
+    # --- Marker File Logic ---
+    marker_file = os.path.join(MARKER_DIR, f"expiry_check_{re.sub(r'[^a-zA-Z0-9.-]+', '_', domain)}")
+    seven_days_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
 
     try:
-        os.makedirs(MARKER_DIR, exist_ok=True) # Ensure marker directory exists
+        os.makedirs(MARKER_DIR, exist_ok=True)
         if os.path.exists(marker_file):
             try:
                 marker_timestamp = os.path.getmtime(marker_file)
@@ -1075,75 +1154,84 @@ def check_domain_expiry(domain, expiry_uuid):
         # For now, let's proceed, but it won't update the marker later.
         pass # Continue the check
 
-    # --- WHOIS Execution ---
+    # --- Expiry Check Logic ---
+    expiry_date = None
+    source = "unknown" # Track where we got the date from
+
+    # --- Attempt 1: WHOIS ---
     try:
         info(f"  → Running WHOIS for {domain}...")
-        # Explicitly capture output as text, handle potential errors
-        process = subprocess.run(['whois', domain], capture_output=True, text=True, check=False, timeout=30) # Added timeout
+        process = subprocess.run(['whois', domain], capture_output=True, text=True, check=False, timeout=30)
 
         if process.returncode != 0:
-            # WHOIS command failed
             error(f"  ❌ WHOIS command failed for {domain} with exit code {process.returncode}. Stderr: {process.stderr.strip()}")
-            ping_healthcheck(expiry_uuid + "/fail", payload=f"stderr={process.stderr.strip()}") # Ping fail
-            return # Don't proceed further if WHOIS fails
-
-        whois_output = process.stdout
-        debug(f"WHOIS output for {domain}:\n{whois_output[:500]}...") # Log truncated output
-
-        # --- Expiry Parsing ---
-        expiry_date = _parse_expiry_from_whois(whois_output)
-
-        if expiry_date:
-            info(f"  ✓ Parsed Expiry Date for {domain}: {expiry_date.strftime('%Y-%m-%d')}")
-            now = datetime.datetime.now(datetime.timezone.utc)
-            time_until_expiry = expiry_date - now
-
-            # Check if expiry is within 30 days OR already passed (configurable threshold)
-            if time_until_expiry <= datetime.timedelta(days=30):
-                # --- CORRECTED LOGIC ---
-                # Check if ALREADY expired (<= 0 days)
-                if time_until_expiry <= datetime.timedelta(days=0):
-                    days_ago = abs(time_until_expiry.days) # Calculate once
-                    warn(f"  ✗ Domain {domain} has expired! (Expired {days_ago} days ago)")
-                    # Ping fail with expired status (using corrected f-string)
-                    ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expired&days_expired={days_ago}")
-                # ELSE, it must be expiring soon (1-30 days)
-                else:
-                    days_left = time_until_expiry.days # Calculate once
-                    warn(f"  ⚠️ Domain {domain} expires soon! ({days_left} days)")
-                    # Ping fail but with expiring_soon status
-                    ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={days_left}")
-                # --- END CORRECTED LOGIC ---
-            # ELSE (more than 30 days remaining)
-            else:
-                days_left = time_until_expiry.days # Calculate once
-                info(f"  ✓ Domain {domain} expiry is OK ({days_left} days remaining).")
-                ping_healthcheck(expiry_uuid, payload=f"status=ok&days_left={days_left}") # Ping success
-
-            # --- Update Marker File ---
-            try:
-                # Create or update the marker file timestamp
-                with open(marker_file, 'w') as f:
-                    f.write(datetime.datetime.now(datetime.timezone.utc).isoformat()) # Write timestamp
-                info(f"  ✓ Updated marker file: {marker_file}")
-            except IOError as e:
-                error(f"  ❌ Failed to write marker file {marker_file}: {e}")
-
+            # Don't immediately fail the check, try GoDaddy if WHOIS command itself failed
+            warn(f"  ⚠️ WHOIS command failed, attempting GoDaddy API fallback for {domain}...")
         else:
-            # Expiry date could not be parsed
-            error(f"  ❌ Could not parse expiry date for {domain} from WHOIS output.")
-            ping_healthcheck(expiry_uuid + "/fail", payload="status=parsing_failed") # Ping fail
+            whois_output = process.stdout
+            expiry_date = _parse_expiry_from_whois(whois_output) # Use renamed function
+            if expiry_date:
+                source = "WHOIS"
+                info(f"  ✓ Parsed Expiry Date via {source} for {domain}: {expiry_date.strftime('%Y-%m-%d')}")
+            else:
+                # WHOIS command succeeded, but parsing failed
+                info(f"  ℹ️ Could not parse expiry date from WHOIS output for {domain}. Attempting GoDaddy API fallback...")
+                debug(f"WHOIS output for {domain} where parsing failed:\n{whois_output[:1000]}...") # Log snippet
+
     except FileNotFoundError:
         error(f"  ❌ WHOIS command not found. Please ensure 'whois' is installed and in PATH.")
-        ping_healthcheck(expiry_uuid + "/fail", payload="status=whois_not_found")
+        warn(f"  ⚠️ WHOIS not found, attempting GoDaddy API fallback for {domain}...")
+        # Cannot proceed with WHOIS, GoDaddy is the only option now
     except subprocess.TimeoutExpired:
         error(f"  ❌ WHOIS command timed out for {domain}.")
-        ping_healthcheck(expiry_uuid + "/fail", payload="status=timeout")
+        warn(f"  ⚠️ WHOIS timed out, attempting GoDaddy API fallback for {domain}...")
+        # Cannot proceed with WHOIS, GoDaddy is the only option now
     except Exception as e:
-        # Catch other potential errors during subprocess execution or parsing
-        error(f"  ❌ An unexpected error occurred during WHOIS check for {domain}: {e}")
-        # Use traceback for more detail if needed: import traceback; traceback.print_exc()
-        ping_healthcheck(expiry_uuid + "/fail", payload=f"status=unexpected_error&error={str(e)}")
+        error(f"  ❌ An unexpected error occurred during WHOIS execution for {domain}: {e}")
+        warn(f"  ⚠️ WHOIS failed unexpectedly, attempting GoDaddy API fallback for {domain}...")
+        # Cannot proceed with WHOIS, GoDaddy is the only option now
+
+    # --- Attempt 2: GoDaddy API (if WHOIS failed or didn't yield date) ---
+    if not expiry_date:
+        expiry_date_godaddy = _get_expiry_from_godaddy(domain)
+        if expiry_date_godaddy:
+            expiry_date = expiry_date_godaddy
+            source = "GoDaddy API"
+            info(f"  ✓ Retrieved Expiry Date via {source} for {domain}: {expiry_date.strftime('%Y-%m-%d')}")
+        # else: # Error/Info message already logged within _get_expiry_from_godaddy if it failed
+
+    # --- Process Result (if expiry_date was found by either method) ---
+    if expiry_date:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        time_until_expiry = expiry_date - now
+
+        # Check expiry status and ping healthcheck
+        if time_until_expiry <= datetime.timedelta(days=30):
+            if time_until_expiry <= datetime.timedelta(days=0):
+                days_ago = abs(time_until_expiry.days)
+                warn(f"  ✗ Domain {domain} has expired! ({days_ago} days ago, Source: {source})")
+                ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expired&days_expired={days_ago}&source={source}")
+            else:
+                days_left = time_until_expiry.days
+                warn(f"  ⚠️ Domain {domain} expires soon! ({days_left} days, Source: {source})")
+                ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={days_left}&source={source}")
+        else:
+            days_left = time_until_expiry.days
+            info(f"  ✓ Domain {domain} expiry is OK ({days_left} days remaining, Source: {source}).")
+            ping_healthcheck(expiry_uuid, payload=f"status=ok&days_left={days_left}&source={source}")
+
+        # Update Marker File (only if we successfully got a date and checked it)
+        try:
+            with open(marker_file, 'w') as f:
+                f.write(datetime.datetime.now(datetime.timezone.utc).isoformat())
+            info(f"  ✓ Updated marker file: {marker_file}")
+        except IOError as e:
+            error(f"  ❌ Failed to write marker file {marker_file}: {e}")
+
+    else:
+        # --- Failure: Date Not Found by either WHOIS or GoDaddy ---
+        error(f"  ❌ Failed to determine expiry date for {domain} using both WHOIS and GoDaddy API.")
+        ping_healthcheck(expiry_uuid + "/fail", payload="status=lookup_failed")
 
 def action_list_checks():
     """Lists all healthchecks found via the API."""
