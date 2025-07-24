@@ -166,3 +166,33 @@ def ping_healthcheck(uuid, endpoint_suffix="", payload=None):
         debug(f"Ping successful ({method}): {ping_url} (Payload: {payload})")
     except requests.exceptions.RequestException as e:
         error(f"Ping failed ({method}): {ping_url} - {e}")
+
+def get_check_details(uuid):
+    """Retrieves the full details for a single healthcheck by its UUID."""
+    if not uuid:
+        warn("Cannot get check details: No UUID provided.")
+        return None
+
+    # This reuses your existing robust request helper
+    return _make_api_request('GET', f'checks/{uuid}')
+
+def update_check_tags(uuid, tags_list):
+    """Updates the tags for a specific healthcheck. Expects a list of strings."""
+    if not uuid:
+        warn("Cannot update tags: No UUID provided.")
+        return False
+
+    # The Healthchecks API expects a space-separated string for tags
+    tags_string = " ".join(sorted(tags_list))
+    payload = {'tags': tags_string}
+
+    info(f"Updating tags for check {uuid} to: \"{tags_string}\"")
+    response_data = _make_api_request('POST', f'checks/{uuid}', data=payload)
+
+    # A successful update returns the updated check object
+    if response_data and response_data.get('tags') == tags_string:
+        debug(f"Successfully updated tags for {uuid}.")
+        return True
+    else:
+        error(f"Failed to update tags for {uuid}.")
+        return False
