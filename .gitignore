@@ -1,15 +1,33 @@
-# Log files & domains files
+# Python
+__pycache__/
+venv/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs and Data
 *.log
-domains.*
-domains
+domains.txt
 
 # Environment files
 .env
 
-# Python virtual environment
-venv
-*.egg-info/
 
-# Workspace specific files
-.vscode
-.idea
+
+# OS-generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+
+# Build artifacts
+build/
+_build/
+dist/
+*.egg-info/

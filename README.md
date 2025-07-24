@@ -27,7 +27,7 @@ The Python implementation now supports package management using:
 1. **requirements.txt** - For traditional pip-based dependency management
 2. **pyproject.toml** - For modern Python packaging (PEP 621 compliant)
 
-For detailed installation and usage instructions, see the [Python README](python/domain-hc/README.md).
+For detailed installation and usage instructions, see the [Python README](domain_checker/README.md).
 
 ## Reference
 

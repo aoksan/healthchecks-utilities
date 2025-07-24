@@ -1,0 +1,21 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "terminal.integrated.defaultProfile.osx": "zsh-with-venv",
+    "terminal.integrated.profiles.osx": {
+      "zsh-with-venv": {
+        "path": "zsh",
+        "args": [
+          "-l",
+          "-c",
+          "if [[ $PWD == *healthchecks-utilities* ]]; then source /Users/user/repos/healthchecks-utilities/venv/bin/activate; fi; exec zsh -l"
+        ],
+        "icon": "terminal-bash"
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+# EditorConfig is awesome: https://editorConfig.org
+
+# This is the top-most EditorConfig file.
+root = true
+
+# Universal settings for all file types
+[*]
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+indent_style = space
+
+# Settings for Python files, following PEP 8 conventions
+[*.py]
+indent_size = 4
+# 88 is the modern standard (used by the Black formatter)
+# 79 is the classic PEP 8 recommendation
+max_line_length = 88
+
+# Makefiles require tabs for indentation, not spaces
+[Makefile]
+indent_style = tab
+
+# Markdown, YAML, and JSON often use 2-space indents for readability
+[*.{md,yml,yaml,json}]
+indent_size = 2

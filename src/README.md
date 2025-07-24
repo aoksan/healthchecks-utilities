@@ -58,7 +58,7 @@ DOMAIN_FILE=domains.txt
 Run the script with one of the available commands:
 
 ```bash
-python checkdomains.py <command>
+python main.py <command>
 ```
 
 Available commands:
@@ -73,5 +73,5 @@ Available commands:
 For more information, run the script without any command:
 
 ```bash
-python checkdomains.py
+python main.py
 ```
