@@ -2,7 +2,7 @@
 import requests
 import re
 import json
-from .config import API_KEY, API_URL, BASE_URL
+from .config import API_KEY, API_URL, BASE_URL, USER_AGENT
 from .logger import info, debug, error, warn
 
 def _make_api_request(method, endpoint, data=None, params=None):
@@ -142,7 +142,7 @@ def ping_healthcheck(uuid, endpoint_suffix="", payload=None):
 
     ping_url = f"{BASE_URL.rstrip('/')}/{uuid}{endpoint_suffix}"
     # Start with base headers, modify within the block if needed
-    headers = {'User-Agent': 'domain-healthcheck-cli-hc-script/1.0'}
+    headers = {'User-Agent': USER_AGENT}
     try:
         # --- Determine method based on payload presence first ---
         if payload:

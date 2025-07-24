@@ -11,6 +11,10 @@ from . import config
 # Category capture group: 0
 
 def log(level, message):
+    if not getattr(config, "LOGGING_ACTIVE", True):
+        return
+    if level == "DEBUG" and not getattr(config, "DEBUG_MODE", False):
+        return
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_line = f"[{timestamp}] [{level}] {message}"
     print(log_line)
