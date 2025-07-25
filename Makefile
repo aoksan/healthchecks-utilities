@@ -26,7 +26,8 @@ help:
 install:
 	@echo "Creating virtual environment in ./venv and installing dependencies..."
 	python3 -m venv venv
-	@. venv/bin/activate; pip install -r requirements.txt
+	@. venv/bin/activate; pip install --upgrade pip
+	@. venv/bin/activate; pip install -r requirements.txt -e .
 	@echo "Virtual environment created. Run 'source venv/bin/activate' to use it."
 
 lint:

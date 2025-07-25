@@ -1,4 +1,5 @@
 # domain_checker/actions/remove.py
+import os
 from .. import api_client, file_handler, config
 from ..logger import info, debug, error, warn
 
