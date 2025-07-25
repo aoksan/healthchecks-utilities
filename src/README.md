@@ -2,49 +2,29 @@
 
 This directory contains Python utilities for monitoring domain health and expiry using Healthchecks.io.
 
-## Installation
+## Installation and Setup
+
+This project is managed using [Rye](https://rye-up.com/).
 
 ### Prerequisites
 
-- Python 3.6 or higher
-- pip (Python package installer)
-- `whois` command-line tool installed on your system
+- The `whois` command-line tool installed on your system.
+- [Rye](https://rye-up.com/guide/installation/) installed on your system.
 
-### Using pip with requirements.txt
+### Setup
 
-The simplest way to install the required dependencies is using pip with the provided requirements.txt file:
+1.  **Clone the repository.**
 
-```bash
-# Navigate to the python directory
-cd python
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Using pip with pyproject.toml (modern approach)
-
-For a more modern approach, you can use pip with the pyproject.toml file (requires pip >= 21.3):
-
-```bash
-# Navigate to the project root
-cd /path/to/healthchecks-utilities
-
-# Install the project in development mode
-pip install -e .
-```
-
-### Verifying Installation
-
-You can verify that all dependencies are installed correctly by running the test script:
-
-```bash
-python python/test_dependencies.py
-```
+2.  **Navigate to the project root and sync dependencies:**
+    From the root directory of this repository, run:
+    ```bash
+    rye sync
+    ```
+    Rye will handle installing the correct Python version and all project dependencies.
 
 ## Configuration
 
-Create a `.env` file in the python directory with the following variables:
+Create a `.env` file in the project's root directory (next to `pyproject.toml`) with the following variables:
 
 ```
 API_URL=https://healthchecks.io/api/v3/
@@ -53,25 +33,28 @@ BASE_URL=https://hc-ping.com
 DOMAIN_FILE=domains.txt
 ```
 
+Note that `DOMAIN_FILE` should point to the `domains.txt` file in the root of the project.
+
 ## Usage
 
-Run the script with one of the available commands:
+Run the script using `rye run` from the project root:
 
 ```bash
-python main.py <command>
+rye run healthchecks-utilities <command>
 ```
 
 Available commands:
+
 - `create`: Ensure checks exist for all domains in file, creating if missing.
 - `check`: Check status/expiry for configured domains and ping healthchecks.
-- `remove-unused`: Remove healthchecks from API not found in the local file.
-- `remove-all`: DANGER: Remove ALL healthchecks from API and clear local file.
+- `remove`: Remove checks from API and/or file (e.g., `--unused`, `--all`, `<domain>`).
 - `list-checks`: List all healthchecks registered in the Healthchecks.io account.
 - `list-domains`: List valid domains and their UUIDs configured in the local file.
 - `delete-markers`: Delete temporary expiry check marker files from /tmp.
+- `sync-file`: Syncs local file with API (adds/removes checks).
 
-For more information, run the script without any command:
+For more information, run the script with `--help`:
 
 ```bash
-python main.py
+rye run healthchecks-utilities --help
 ```

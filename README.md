@@ -1,33 +1,57 @@
 # Healthchecks Utilities
 
-This repository provides utilities for managing domain uptime and expiry monitoring via [Healthchecks.io](https://healthchecks.io/), a free and open-source cron job monitoring service. It includes both Bash scripts and a Python implementation with package management support.
+This repository provides a Python utility for managing domain uptime and expiry monitoring via [Healthchecks.io](https://healthchecks.io/), a free and open-source cron job monitoring service.
 
-The project is organized into:
-
-- `bash/domain-hc/`: Bash tools for checking domains, creating or cleaning up Healthchecks, and tracking expiry.
-- `python/`: Python implementation of domain health checks with package management support.
-- `doc-test/`: Manual files for command-line documentation. (WORKING)
-
-Each domain is tracked via a central `domains.txt` file, where each line includes a status UUID and optionally an expiry UUID. These UUIDs correspond to individual checks on Healthchecks.io and are actively pinged or logged depending on domain availability and WHOIS expiry data.
-
-The scripts are built to work together, using shared helper files for things like logging and environment setup. WHOIS checks, expiry markers, and Healthchecks API interactions are reused across scripts.
-
-Since this project was written with the help of ChatGPT, it’s a bit experimental—you might run into small bugs or quirks, especially with unusual domain setups. Feel free to tweak things as needed.
-
-Refer to `doc-test/domain-hc.1` for detailed usage of the Bash scripts.
+The Python source code is located in the `src/` directory. Each domain is tracked via a central `domains.txt` file, where each line includes a status UUID and optionally an expiry UUID. These UUIDs correspond to individual checks on Healthchecks.io and are actively pinged or logged depending on domain availability and WHOIS expiry data.
 
 ## Python Implementation
 
-The `python/` directory contains a Python implementation of the domain health checks. This implementation provides the same functionality as the Bash scripts but with a more structured approach and better error handling.
+The project is managed using [Rye](https://rye-up.com/), with common tasks wrapped in a `Makefile` for convenience.
 
-### Package Management
+### Installation & Setup
 
-The Python implementation now supports package management using:
+1.  **Install Rye:** Before you begin, ensure you have Rye installed on your system. Follow the instructions on the [official Rye website](https://rye-up.com/guide/installation/).
 
-1. **requirements.txt** - For traditional pip-based dependency management
-2. **pyproject.toml** - For modern Python packaging (PEP 621 compliant)
+2.  **Install Project Dependencies:** Navigate to the project's root directory and run the `install` command:
+    ```bash
+    make install
+    ```
+    This will use Rye to sync the project, download the correct Python version, create a virtual environment, and install all required dependencies.
 
-For detailed installation and usage instructions, see the [Python README](domain_checker/README.md).
+### Usage
+
+This project provides a `Makefile` to simplify common operations. You can see a list of all available commands by running `make help`.
+
+#### Running the Application
+
+To run the main utility, you should use `rye run`, which executes commands within the project's managed environment.
+
+```bash
+rye run healthchecks-utilities <command>
+```
+
+For example, to list all configured domains:
+
+```bash
+rye run healthchecks-utilities list-domains
+```
+
+#### Activating a Development Shell
+
+If you need an interactive shell with the virtual environment activated, simply run:
+
+```bash
+make source
+```
+
+This will spawn a new shell session. To return to your original shell, just type `exit`.
+
+#### Development Tasks
+
+The Makefile includes shortcuts for common development tasks:
+
+- **`make lint`**: Run the linter to check code quality.
+- **`make test`**: Run the unit tests.
 
 ## Reference
 
