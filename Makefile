@@ -42,5 +42,5 @@ clean:
 	@echo "Cleaning up..."
 	find . -type f -name "*.pyc" -delete
 	find . -type d -name "__pycache__" -delete
-	rm -rf .pytest_cache build dist *.egg-info .venv .rye
+	rm -rf .pytest_cache build dist *.egg-info .venv .rye requirements*.lock
 	@echo "Cleanup complete."
