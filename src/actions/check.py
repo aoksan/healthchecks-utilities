@@ -63,7 +63,11 @@ def check_domain_expiry(domain, expiry_uuid):
         elif days_left <= 30:
             desired_tag = 'expires_in_<30d'
             warn(f"  ⚠️ Domain {domain} expires soon! ({days_left} days)")
-            api_client.ping_healthcheck(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}") # Ping success, but tag is a warning
+            api_client.ping_healthcheck(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
+        elif days_left <= 90:
+            desired_tag = 'expires_in_<90d'
+            warn(f"  ⚠️ Domain {domain} expires soon! ({days_left} days)")
+            api_client.ping_healthcheck(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
         else:
             desired_tag = 'expiry_ok'
             info(f"  ✓ Domain {domain} expiry is OK ({days_left} days remaining).")
