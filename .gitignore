@@ -1,9 +1,10 @@
 # Python
-__pycache__/
-venv/
+*venv/
+.rye/
 *.pyc
 *.pyo
 *.pyd
+requirements*.lock
 
 # Logs and Data
 *.log
@@ -11,8 +12,8 @@ domains.txt
 
 # Environment files
 .env
-
-
+.env.*
+!.env.example
 
 # OS-generated files
 .DS_Store
@@ -31,3 +32,4 @@ build/
 _build/
 dist/
 *.egg-info/
+*cache*
