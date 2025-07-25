@@ -35,7 +35,7 @@ def _get_expiry_from_godaddy(domain):
             error(f"  ❌ GoDaddy API Authentication/Authorization failed ({response.status_code}). Check API Key/Secret.")
             return None
         elif response.status_code == 429:
-            warn(f"  ⚠️ GoDaddy API rate limit hit while checking {domain}. Try again later.")
+            warn(f"  ⚠ GoDaddy API rate limit hit while checking {domain}. Try again later.")
             return None
 
         response.raise_for_status() # Raise HTTPError for other bad responses (5xx, other 4xx)
@@ -44,7 +44,7 @@ def _get_expiry_from_godaddy(domain):
         expiry_str = response_data.get('expires')
 
         if not expiry_str:
-            warn(f"  ⚠️ 'expires' field not found in GoDaddy API response for {domain}.")
+            warn(f"  ⚠ 'expires' field not found in GoDaddy API response for {domain}.")
             debug(f"GoDaddy Response Body: {response_data}")
             return None
 
