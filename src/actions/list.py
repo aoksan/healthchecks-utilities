@@ -5,7 +5,7 @@ from ..logger import info
 def list_api_checks():
     """Lists all healthchecks found via the API."""
     info("Starting: List Checks from API")
-    all_checks = api_client.get_all_healthchecks_details()
+    all_checks = api_client.get_all_checks_details()
     if not all_checks:
         info("No healthchecks found on the account.")
         return

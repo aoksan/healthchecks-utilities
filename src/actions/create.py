@@ -47,7 +47,7 @@ def create_for_single_domain(domain_to_process, status_only=False, expiry_only=F
                 target_expiry_uuid = current_expiry_uuid
 
                 if not expiry_only and not target_status_uuid:
-                    new_uuid = api_client.create_healthcheck(domain_to_process,
+                    new_uuid = api_client.create_check(domain_to_process,
                                                              'status')
                     if new_uuid:
                         target_status_uuid = new_uuid
@@ -55,7 +55,7 @@ def create_for_single_domain(domain_to_process, status_only=False, expiry_only=F
                         updated = True
 
                 if not status_only and not target_expiry_uuid and not is_subdomain:
-                    new_uuid = api_client.create_healthcheck(domain_to_process,
+                    new_uuid = api_client.create_check(domain_to_process,
                                                              'expiry')
                     if new_uuid:
                         target_expiry_uuid = new_uuid
@@ -67,10 +67,10 @@ def create_for_single_domain(domain_to_process, status_only=False, expiry_only=F
     if not domain_found:
         info(f"Domain '{domain_to_process}' not found. Creating new entry...")
         if not expiry_only:
-            target_status_uuid = api_client.create_healthcheck(domain_to_process,
+            target_status_uuid = api_client.create_check(domain_to_process,
                                                                'status')
         if not status_only and not is_subdomain:
-            target_expiry_uuid = api_client.create_healthcheck(domain_to_process,
+            target_expiry_uuid = api_client.create_check(domain_to_process,
                                                                'expiry')
 
         if target_status_uuid or target_expiry_uuid:
@@ -124,14 +124,14 @@ def create_from_file(status_only=False, expiry_only=False):
                 current_expiry_uuid = part.split(':', 1)[1]
 
         if not expiry_only and not current_status_uuid:
-            new_uuid = api_client.create_healthcheck(domain, 'status')
+            new_uuid = api_client.create_check(domain, 'status')
             if new_uuid:
                 current_status_uuid = new_uuid
                 updated = True
 
         is_subdomain = domain.count('.') > 1
         if not status_only and not current_expiry_uuid and not is_subdomain:
-            new_uuid = api_client.create_healthcheck(domain, 'expiry')
+            new_uuid = api_client.create_check(domain, 'expiry')
             if new_uuid:
                 current_expiry_uuid = new_uuid
                 updated = True

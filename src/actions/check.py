@@ -10,13 +10,13 @@ def check_domain_status(domain, status_uuid):
     try:
         response = requests.get(f"https://{domain}", timeout=10, allow_redirects=True, verify=True, headers={'User-Agent': 'domain-hc-script/1.0'})
         if 200 <= response.status_code < 400:
-            api_client.ping_healthcheck(status_uuid)
+            api_client.ping_check(status_uuid)
             info(f"  ✓ Status: up (HTTP {response.status_code}) for {domain}")
         else:
-            api_client.ping_healthcheck(status_uuid, "/fail", payload=f"status={response.status_code}")
+            api_client.ping_check(status_uuid, "/fail", payload=f"status={response.status_code}")
             error(f"  ✗ Status: down/error (HTTP {response.status_code}) for {domain}")
     except requests.exceptions.RequestException as e:
-        api_client.ping_healthcheck(status_uuid, "/fail", payload=f"status=error_{type(e).__name__}")
+        api_client.ping_check(status_uuid, "/fail", payload=f"status=error_{type(e).__name__}")
         error(f"  ✗ Status check failed for {domain}: {e}")
 
 MANAGED_EXPIRY_TAGS = ['expiry_ok', 'expires_in_<30d', 'expires_in_<7d', 'expired', 'lookup_failed']
@@ -29,7 +29,7 @@ def check_domain_expiry(domain, expiry_uuid):
     expiry_date, source = None, "unknown"
     if domain.count('.') > 1:
         info(f"  ↪ Skipping WHOIS/API lookup for apparent subdomain: {domain}")
-        api_client.ping_healthcheck(expiry_uuid, payload="status=skipped_subdomain")
+        api_client.ping_check(expiry_uuid, payload="status=skipped_subdomain")
         # Optional: You could also add a 'subdomain' tag here
         return
 
@@ -55,27 +55,27 @@ def check_domain_expiry(domain, expiry_uuid):
         if days_left <= 0:
             desired_tag = 'expired'
             warn(f"  ✗ Domain {domain} has expired! ({abs(days_left)} days ago)")
-            api_client.ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expired&days_left={days_left}")
+            api_client.ping_check(expiry_uuid + "/fail", payload=f"status=expired&days_left={days_left}")
         elif days_left <= 7:
             desired_tag = 'expires_in_<7d'
             warn(f"  ⚠ Domain {domain} expires very soon! ({days_left} days)")
-            api_client.ping_healthcheck(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={days_left}")
+            api_client.ping_check(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={days_left}")
         elif days_left <= 30:
             desired_tag = 'expires_in_<30d'
             warn(f"  ⚠ Domain {domain} expires soon! ({days_left} days)")
-            api_client.ping_healthcheck(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
+            api_client.ping_check(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
         elif days_left <= 90:
             desired_tag = 'expires_in_<90d'
             warn(f"  ⚠ Domain {domain} expires soon! ({days_left} days)")
-            api_client.ping_healthcheck(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
+            api_client.ping_check(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
         else:
             desired_tag = 'expiry_ok'
             info(f"  ✓ Domain {domain} expiry is OK ({days_left} days remaining).")
-            api_client.ping_healthcheck(expiry_uuid, payload=f"status=ok&days_left={days_left}")
+            api_client.ping_check(expiry_uuid, payload=f"status=ok&days_left={days_left}")
     else:
         desired_tag = 'lookup_failed'
         error(f"  ✗ Failed to determine expiry date for {domain}.")
-        api_client.ping_healthcheck(expiry_uuid + "/fail", payload="status=lookup_failed")
+        api_client.ping_check(expiry_uuid + "/fail", payload="status=lookup_failed")
 
     # --- 3. Update Tags if Necessary ---
     if not desired_tag:

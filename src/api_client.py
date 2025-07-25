@@ -50,8 +50,8 @@ def _make_api_request(method, endpoint, data=None, params=None):
             error(f"API Response ({e.response.status_code}): {e.response.text}")
     return None # Indicate failure on exceptions
 
-def create_healthcheck(domain, check_type):
-    """Creates a status or expiry healthcheck for a given domain-healthcheck-cli."""
+def create_check(domain, check_type):
+    """Creates a status or expiry check for a given domain-healthcheck-cli."""
     slug = re.sub(r'[^a-z0-9]+', '-', domain.lower()) # Generate a safe slug
     data = {
         'name': domain,
@@ -102,8 +102,12 @@ def create_healthcheck(domain, check_type):
         # error(f"Failed to create {check_type} check for {domain-healthcheck-cli}. API response: {response_data}") # Redundant logging
         return None # API call failed or didn't return expected data
 
-def delete_healthcheck(uuid):
-    """Deletes a healthcheck by its UUID."""
+# TODO: Implement update_check
+# def update_check(uuid):
+#     return False
+
+def delete_check(uuid):
+    """Deletes a check by its UUID."""
     if not uuid:
         warn("Skipping deletion: No UUID provided.")
         return False # Indicate failure
@@ -115,23 +119,23 @@ def delete_healthcheck(uuid):
     # We rely on _make_api_request logging errors if the status code was bad.
     if response_data is not None: # Hypothetically check if needed
         # Log success based on receiving a response (or None for 204) without prior error logs
-        info(f"Deletion API call for healthcheck {uuid} appears successful.")
+        info(f"Deletion API call for check {uuid} appears successful.")
         # Optionally, log the details if needed for confirmation:
         # if response_data:
         #     debug(f"API returned deleted object details: {response_data}")
         return True
     else:
         # An error should have already been logged by _make_api_request
-        error(f"Deletion failed for healthcheck {uuid}.")
+        error(f"Deletion failed for check {uuid}.")
         return False # Indicate failure
 
-def get_all_healthchecks_details():
-    """Retrieves details for all healthchecks."""
+def get_all_checks_details():
+    """Retrieves details for all checks."""
     response_data = _make_api_request('GET', 'checks/')
     return response_data.get('checks', []) if response_data else []
 
-def ping_healthcheck(uuid, endpoint_suffix="", payload=None):
-    """Pings a healthcheck endpoint (success, fail, log, start). Uses POST if payload is present."""
+def ping_check(uuid, endpoint_suffix="", payload=None):
+    """Pings a check endpoint (success, fail, log, start). Uses POST if payload is present."""
     if not uuid:
         warn(f"Skipping ping: No UUID provided (suffix: {endpoint_suffix})")
         return
@@ -168,7 +172,7 @@ def ping_healthcheck(uuid, endpoint_suffix="", payload=None):
         error(f"Ping failed ({method}): {ping_url} - {e}")
 
 def get_check_details(uuid):
-    """Retrieves the full details for a single healthcheck by its UUID."""
+    """Retrieves the full details for a single check by its UUID."""
     if not uuid:
         warn("Cannot get check details: No UUID provided.")
         return None
@@ -177,7 +181,7 @@ def get_check_details(uuid):
     return _make_api_request('GET', f'checks/{uuid}')
 
 def update_check_tags(uuid, tags_list):
-    """Updates the tags for a specific healthcheck. Expects a list of strings."""
+    """Updates the tags for a specific check. Expects a list of strings."""
     if not uuid:
         warn("Cannot update tags: No UUID provided.")
         return False

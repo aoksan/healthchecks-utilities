@@ -34,7 +34,7 @@ def remove_single_domain(domain_to_remove, force=False):
     Removes checks for a specific domain from the API and the local file.
     """
     info(f"Starting: Remove Single Domain '{domain_to_remove}'")
-    all_checks = api_client.get_all_healthchecks_details()
+    all_checks = api_client.get_all_checks_details()
     if all_checks is None:
         error("Failed to retrieve checks from API. Cannot proceed.")
         return
@@ -52,7 +52,7 @@ def remove_single_domain(domain_to_remove, force=False):
                 return
 
         for uuid in uuids_to_delete:
-            api_client.delete_healthcheck(uuid)
+            api_client.delete_check(uuid)
     else:
         info(f"No active checks found in API with name '{domain_to_remove}'.")
 
@@ -89,13 +89,13 @@ def remove_all(force=False):
             info("Operation cancelled.")
             return
 
-    all_checks = api_client.get_all_healthchecks_details()
+    all_checks = api_client.get_all_checks_details()
     if not all_checks:
         info("No healthchecks found to delete.")
     else:
         info(f"Deleting {len(all_checks)} healthchecks...")
         for check in all_checks:
-            api_client.delete_healthcheck(check['uuid'])
+            api_client.delete_check(check['uuid'])
 
     try:
         with open(config.DOMAIN_FILE, "w") as f:
@@ -109,7 +109,7 @@ def remove_all(force=False):
 def remove_unused():
     """Removes healthchecks from the API that are not listed in the domain file."""
     info("Starting: Remove Unused Checks")
-    all_checks = api_client.get_all_healthchecks_details()
+    all_checks = api_client.get_all_checks_details()
     if not all_checks:
         info("No healthchecks on account. Nothing to remove.")
         return
@@ -129,7 +129,7 @@ def remove_unused():
     for uuid in unused_uuids:
         check_info = next((c['name'] for c in all_checks if c['uuid'] == uuid), 'N/A')
         info(f"  - Deleting unused check: {uuid} (Name: {check_info})")
-        api_client.delete_healthcheck(uuid)
+        api_client.delete_check(uuid)
 
     info(f"Deleted {len(unused_uuids)} unused checks.")
     info("Finished: Remove Unused Checks")

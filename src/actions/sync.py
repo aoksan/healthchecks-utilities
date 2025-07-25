@@ -11,7 +11,7 @@ def sync_file_with_api():
     2. Adds new entries to the file for checks found in the API but not in the file.
     """
     info("Starting: Sync Domain File with API")
-    all_checks = api_client.get_all_healthchecks_details()
+    all_checks = api_client.get_all_checks_details()
     if all_checks is None:
         warn("Failed to retrieve checks from API. Aborting sync.")
         return
