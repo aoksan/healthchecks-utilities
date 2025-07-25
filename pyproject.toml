@@ -17,9 +17,6 @@ dependencies = [
     "python-dotenv==1.1.0",
 ]
 
-[project.scripts]
-healthchecks-utilities = "src.cli:main"
-
 [tool.rye]
 managed = true
 dev-dependencies = [
@@ -28,11 +25,15 @@ dev-dependencies = [
     "flake8>=7.0.0",
 ]
 
+
 [tool.setuptools]
-[tool.setuptools.packages.find]
-where = ["src"]
+packages = ["healthchecks_utilities"]
+package-dir = {"healthchecks_utilities" = "src"}
+
+[project.scripts]
+healthchecks-utilities = "healthchecks_utilities.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = [
-  "."
+  "src"
 ]
