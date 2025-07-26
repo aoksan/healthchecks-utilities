@@ -36,7 +36,7 @@ lint:
 
 test:
 	@echo "Running tests with Rye..."
-	@rye run pytest
+	@rye run pytest -s
 
 clean:
 	@echo "Cleaning up..."
