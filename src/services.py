@@ -32,7 +32,7 @@ def _get_expiry_from_godaddy(domain):
             info(f"  ℹ️ Domain {domain} not found in this GoDaddy account (API returned 404).")
             return None
         elif response.status_code == 401 or response.status_code == 403:
-            error(f"  ❌ GoDaddy API Authentication/Authorization failed ({response.status_code}). Check API Key/Secret.")
+            error(f"  ✗ GoDaddy API Authentication/Authorization failed ({response.status_code}). Check API Key/Secret.")
             return None
         elif response.status_code == 429:
             warn(f"  ⚠ GoDaddy API rate limit hit while checking {domain}. Try again later.")
@@ -58,70 +58,116 @@ def _get_expiry_from_godaddy(domain):
             dt_aware_utc = dt_aware.astimezone(datetime.timezone.utc)
             return dt_aware_utc
         except ValueError:
-            error(f"  ❌ Could not parse expiry date string '{expiry_str}' from GoDaddy API response for {domain}.")
+            error(f"  ✗ Could not parse expiry date string '{expiry_str}' from GoDaddy API response for {domain}.")
             return None
 
     except requests.exceptions.Timeout:
-        error(f"  ❌ GoDaddy API request timed out for {domain}")
+        error(f"  ✗ GoDaddy API request timed out for {domain}")
     except requests.exceptions.RequestException as e:
-        error(f"  ❌ GoDaddy API request error for {domain}: {e}")
+        error(f"  ✗ GoDaddy API request error for {domain}: {e}")
         if e.response is not None:
             error(f"  GoDaddy API Response ({e.response.status_code}): {e.response.text}")
     except json.JSONDecodeError:
-        error(f"  ❌ Failed to decode JSON response from GoDaddy API for {domain}.")
+        error(f"  ✗ Failed to decode JSON response from GoDaddy API for {domain}.")
         debug(f"GoDaddy Raw Response: {response.text}")
     except Exception as e:
-        error(f"  ❌ Unexpected error during GoDaddy API call for {domain}: {e}")
+        error(f"  ✗ Unexpected error during GoDaddy API call for {domain}: {e}")
 
     return None # Indicate failure
 
 def _parse_expiry_from_whois(whois_output):
-    """Attempts to parse the expiry date from WHOIS output."""
-    # Common patterns for expiry dates - add more as needed
+    """
+    Attempts to parse an expiry date from raw WHOIS output text.
+
+    This function is designed to be robust against the highly inconsistent formatting
+    of WHOIS records. It operates using a multi-stage process:
+
+    1.  **Pattern Matching**: It iterates through a list of 3 primary regular
+        expressions, ordered from most specific (e.g., ISO 8601 format) to most
+        general (e.g., 'Key: Value'). This handles different labels like
+        'Registry Expiry Date', 'expires', etc., and captures the potential
+        date string. A debug log is generated for each successful match.
+
+    2.  **Date Parsing**: For each string captured by a pattern, the function
+        attempts to parse it using a list of 5 common date formats (e.g.,
+        '%Y-%m-%d', '%d-%b-%Y'). It also includes a special check for UNIX
+        timestamps.
+
+    3.  **First Success Wins**: The function returns the *first* successfully
+        parsed date. If a pattern matches a string that cannot be parsed, the
+        function discards it and moves on to the next pattern, ensuring that
+        a single malformed line does not cause the entire process to fail.
+
+    If no pattern yields a parsable date after checking the entire WHOIS text,
+    the function returns None.
+    """
+    if not whois_output:
+        return None
+
+    # Common patterns for expiry dates. More specific patterns should come first.
     patterns = [
-        # Handle the T...Z format specifically first
+        # Pattern for ISO 8601 format with 'Z' (e.g., 2025-10-22T04:00:00Z)
         r'(?:Registry Expiry Date|Expiration Date|Expiry Date|paid-till):\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)',
-        # General patterns (capture value after the label)
-        r'(?:Registry Expiry Date|Expiration Date|Expiry Date|paid-till):\s*(\S+)',
-        r'expires:\s*(\S+)',
-        r'Expiration Time:\s*(\S+)',
-        # --- Add patterns for specific TLDs if known ---
-        # Example for a hypothetical .de format if it was 'Changed: YYYYMMDD'
-        # r'Changed:\s*(\d{8})',
-        # Example for a hypothetical .nl format if it was 'expire date: YYYY-MM-DD'
-        # r'expire date:\s*(\d{4}-\d{2}-\d{2})',
+        # Pattern for dates like '31-Dec-2029'
+        r'(?:expires|Expiry Date):\s*(\d{1,2}-[A-Za-z]{3}-\d{4})',
+        # General pattern for various 'Key: Value' formats (YYYY-MM-DD, etc.)
+        r'(?:Registry Expiry Date|Expiration Date|Expiry Date|paid-till|Expiration Time):\s*(\S+)'
     ]
+
+    formats_to_try = [
+        ('%Y-%m-%dT%H:%M:%SZ', True), # e.g., 2029-12-31T12:00:00Z
+        ('%Y.%m.%d', False), # e.g., 2029.12.31
+        ('%Y-%m-%d', False), # e.g., 2029-12-31
+        ('%Y-%m-%d', False), # e.g., 2029-12-31
+        ('%Y/%m/%d', False), # e.g., 2029/12/31
+        ('%d/%m/%Y', False), # e.g., 31/12/2029
+        ('%d-%m-%Y', False), # e.g., 31-12-2029
+        ('%d-%b-%Y', False), # e.g., 31-Dec-2029
+        ('%d %b %Y', False), # e.g., 31 Dec 2029
+        ('%d %B %Y', False), # e.g., 31 December 2029
+        ('%Y%m%d'  , False), # e.g., 20291231
+        ('%Y.%m.%d %H:%M:%S', False), # e.g., 2029.12.31 12:00:00
+        ('%Y-%m-%d %H:%M:%S', False), # e.g., 2029-12-31 12:00:00
+    ]
+
     for pattern in patterns:
         match = re.search(pattern, whois_output, re.IGNORECASE)
-        if match:
-            date_str = match.group(1).strip()
-            # Try parsing common date formats (ISO, variations)
-            # Prioritize formats often indicating UTC or specific structures
-            formats_to_try = [
-                ('%Y-%m-%dT%H:%M:%SZ', True), # Explicit UTC via Z
-                ('%Y-%m-%d', False),
-                ('%d-%b-%Y', False), # e.g., 01-Jan-2025
-                ('%Y.%m.%d', False),
-                ('%d/%m/%Y', False),
-                ('%Y%m%d', False), # Example for YYYYMMDD from hypothetical 'Changed:'
-                # Add other common formats if needed
-            ]
-            for fmt, is_explicit_utc in formats_to_try:
-                try:
-                    dt_naive = datetime.datetime.strptime(date_str, fmt)
-                    # Make the datetime object timezone-aware (assuming UTC)
-                    # WHOIS data is typically UTC, even if not explicitly marked.
-                    # If the format explicitly indicated UTC ('Z'), we know it is.
-                    # Otherwise, we assume it is.
-                    dt_aware = dt_naive.replace(tzinfo=datetime.timezone.utc)
-                    return dt_aware
-                except ValueError:
-                    continue
-            warn(f"Could not parse matched WHOIS date string: '{date_str}' with known formats.")
-            return None # Matched but couldn't parse
+        if not match:
+            continue  # This pattern didn't find anything, move to the next.
 
-    debug("No expiry date pattern matched in WHOIS output.")
-    return None # No pattern matched
+        date_str = match.group(1).strip()
+
+        # --- YOUR REQUESTED DEBUG LOG ---
+        debug(f"Pattern '{pattern}' matched. Attempting to parse captured string: '{date_str}'")
+
+        if not date_str:
+            continue # No date string captured, skip to next pattern
+
+        # Try UNIX timestamp first
+        if date_str.isdigit() and len(date_str) in (10, 13):
+            try:
+                ts = int(date_str[:10])
+                dt_aware = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+                debug(f"Successfully parsed '{date_str}' as a UNIX timestamp.")
+                return dt_aware
+            except (ValueError, OSError):
+                pass # Not a valid timestamp, proceed to other formats
+
+        # Try string-based formats
+        for fmt, _ in formats_to_try:
+            try:
+                dt_naive = datetime.datetime.strptime(date_str, fmt)
+                dt_aware = dt_naive.replace(tzinfo=datetime.timezone.utc)
+                # Success! We found a pattern and parsed it.
+                debug(f"Successfully parsed '{date_str}' with format '{fmt}'.")
+                return dt_aware
+            except ValueError:
+                # This format didn't work for this string, try the next format.
+                continue
+
+    # If we've exhausted all patterns and none yielded a parsable date:
+    debug("No parsable expiry date found in WHOIS output after trying all patterns.")
+    return None # Indicate failure
 
 
 # You can also create a new function here to encapsulate the whois subprocess call
@@ -131,13 +177,13 @@ def run_whois(domain):
     try:
         process = subprocess.run(['whois', domain], capture_output=True, text=True, check=False, timeout=30)
         if process.returncode != 0:
-            error(f"  ❌ WHOIS command failed for {domain} with exit code {process.returncode}. Stderr: {process.stderr.strip()}")
+            error(f"  ✗ WHOIS command failed for {domain} with exit code {process.returncode}. Stderr: {process.stderr.strip()}")
             return None
         return process.stdout
     except FileNotFoundError:
-        error(f"  ❌ WHOIS command not found. Please ensure 'whois' is installed and in PATH.")
+        error(f"  ✗ WHOIS command not found. Please ensure 'whois' is installed and in PATH.")
     except subprocess.TimeoutExpired:
-        error(f"  ❌ WHOIS command timed out for {domain}.")
+        error(f"  ✗ WHOIS command timed out for {domain}.")
     except Exception as e:
-        error(f"  ❌ An unexpected error occurred during WHOIS execution for {domain}: {e}")
+        error(f"  ✗ An unexpected error occurred during WHOIS execution for {domain}: {e}")
     return None
