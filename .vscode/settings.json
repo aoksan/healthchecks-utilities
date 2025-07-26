@@ -1,0 +1,59 @@
+{
+  "python.defaultInterpreterPath": ".venv/bin/python",
+  "python.analysis.extraPaths": ["./src", "src"],
+  "python.autoComplete.extraPaths": ["./src", "src"],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": [
+    "tests", // This is a good practice to specify the test directory
+    "-s" // <-- ADD THIS LINE
+  ],
+  "logFileHighlighter.customPatterns": [
+    // --- Rule 1: Highlight entire ERROR lines with a faint red background ---
+    // This gives an immediate visual cue for scanning the file.
+    {
+      "background": "#8b000033", // Very faint, dark red background
+      "highlightEntireLine": true,
+      "pattern": "^.*\\[ERROR\\].*$"
+    },
+    // --- Rule 2: Highlight entire WARN lines with a faint yellow background ---
+    {
+      "background": "#ab680033", // Very faint, dark amber background
+      "highlightEntireLine": true,
+      "pattern": "^.*\\[WARN\\].*$"
+    },
+    // --- Rule 3: Color the [Log Level] tags themselves ---
+    // These rules are more specific and will apply *on top* of the line highlights.
+    {
+      "fontWeight": "bold",
+      "foreground": "#ff8c8c", // A brighter, more visible red for the text
+      "pattern": "\\[ERROR\\]"
+    },
+    {
+      "fontWeight": "bold",
+      "foreground": "#ffd370", // A bright yellow/gold
+      "pattern": "\\[WARN\\]"
+    },
+    {
+      "foreground": "#87cefa", // A calm light blue
+      "pattern": "\\[INFO\\]"
+    },
+    // --- Rule 4: Color the [Timestamp] green ---
+    // This pattern precisely matches the date and time format in your logs.
+    {
+      "foreground": "#6a9955", // A pleasant, readable green
+      "pattern": "\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\]"
+    },
+    // --- Rule 5: Keep specific, high-value error message highlights ---
+    // These help pinpoint the exact cause of an error.
+    {
+      "background": "#ffdd00",
+      "border": "1px solid red",
+      "fontWeight": "bold",
+      "foreground": "#000000",
+      "overviewColor": "#ff0000",
+      "pattern": "json validation error: tags is not a string"
+    }
+  ]
+}

@@ -24,7 +24,6 @@ domains.txt
 
 # IDE / Editor
 .idea/
-.vscode/
 *.swp
 
 # Build artifacts
