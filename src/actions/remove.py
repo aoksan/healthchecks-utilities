@@ -3,32 +3,43 @@ import os
 from .. import api_client, file_handler, config
 from ..logger import info, debug, error, warn
 
-def delete_markers():
-    """Deletes the temporary expiry check marker files from the configured directory."""
-    info("Starting: Delete Expiry Markers")
+def delete_marker(args):
+    """
+    Handles the 'delete-markers' command by dispatching to the correct
+    file_handler function based on the provided filters.
+    """
+    info("Starting: Delete Marker(s)")
     deleted_count = 0
 
-    if not os.path.isdir(config.MARKER_DIR):
-        info(f"Marker directory '{config.MARKER_DIR}' does not exist. Nothing to delete.")
-        return
-
     try:
-        for filename in os.listdir(config.MARKER_DIR):
-            if filename.startswith("expiry_check_"):
-                file_path = os.path.join(config.MARKER_DIR, filename)
-                try:
-                    os.remove(file_path)
-                    info(f"  - Deleted marker: {file_path}")
-                    deleted_count += 1
-                except OSError as e:
-                    error(f"Could not delete marker file '{file_path}': {e}")
-    except OSError as e:
-        error(f"Could not list files in marker directory '{config.MARKER_DIR}': {e}")
+        # The --all flag overrides everything else
+        if args.all:
+            deleted_count = file_handler.delete_all_markers()
 
-    if deleted_count == 0:
-        info(f"No marker files found matching 'expiry_check_*' in {config.MARKER_DIR}.")
+        # Handle combinations of domain and type
+        elif args.domain and args.type:
+            # Most specific: delete one type for one domain
+            marker_filename = f"{args.type}_check_{args.domain}"
+            if file_handler.delete_one_marker(marker_filename):
+                deleted_count = 1
 
-    info("Finished: Delete Expiry Markers")
+        elif args.domain:
+            # Delete all types for a specific domain
+            deleted_count = file_handler.delete_markers_for_domain(args.domain)
+
+        elif args.type:
+            # Delete all markers of a specific type
+            deleted_count = file_handler.delete_markers_by_type(args.type)
+
+        # The check in cli.py ensures we never get here with no args.
+
+        if deleted_count > 0: # type: ignore
+            info(f"Successfully deleted {deleted_count} marker file(s).")
+        else:
+            info("No matching marker files were found to delete.")
+
+    except Exception as e:
+        error(f"An unexpected error occurred during marker deletion: {e}")
 
 def remove_single_domain(domain_to_remove, force=False):
     """

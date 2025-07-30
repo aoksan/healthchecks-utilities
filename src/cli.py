@@ -79,8 +79,27 @@ def main():
     list_domains_parser.set_defaults(func=commands.action_list_domains)
 
     # Command: delete-markers
-    delete_markers_parser = subparsers.add_parser('delete-markers', help='Delete temporary expiry check marker files.')
-    delete_markers_parser.set_defaults(func=commands.action_delete_markers)
+    delete_markers_parser = subparsers.add_parser(
+        'delete-markers',
+        help='Delete temporary expiry check marker file(s).'
+    )
+    # These are now standard, independent arguments, NOT in a group.
+    delete_markers_parser.add_argument(
+        '-d', '--domain',
+        type=str,
+        help='The specific domain to delete markers for.'
+    )
+    delete_markers_parser.add_argument(
+        '-t', '--type',
+        choices=['status', 'expiry'],
+        help='The type of marker to delete (can be combined with --domain).'
+    )
+    delete_markers_parser.add_argument(
+        '-a', '--all',
+        action='store_true',
+        help='Delete ALL marker files, ignoring other filters.'
+    )
+    delete_markers_parser.set_defaults(func=commands.action_delete_marker)
 
     # Command: sync-file
     sync_file_parser = subparsers.add_parser('sync-file', help='Syncs local file with API (adds/removes checks).')
@@ -89,9 +108,13 @@ def main():
     # --- 3. Parse arguments and execute the associated function ---
     args = parser.parse_args()
 
+    if args.command == 'delete-markers' and not (args.domain or args.type or args.all):
+        delete_markers_parser.print_help()
+        parser.exit(0,"\nError: You must specify at least one filter (--domain, --type, or --all).")
+
     # Dispatch to the function set by set_defaults()
     # Pass the 'args' object to commands that need to inspect them further.
-    if args.command in ['create', 'remove']:
+    if args.command in ['create', 'remove', 'delete-markers']:
         args.func(args)
     else:
         # For simple commands that don't need arguments

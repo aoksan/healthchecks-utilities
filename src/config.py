@@ -11,7 +11,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # --- Load environment variables ---
 BASE_URL = os.getenv("BASE_URL", "https://hc-ping.com")
 DOMAIN_FILE = os.getenv("DOMAIN_FILE", os.path.join(os.path.dirname(SCRIPT_DIR), "domains.txt"))
-MARKER_DIR = "/tmp/domain-hc-markers"
+MARKER_DIR = "/tmp/hc-utilities/markers"
 LOG_FILE = os.path.join(os.path.dirname(SCRIPT_DIR), "logs.log")
 LOGGING_ACTIVE = os.getenv("LOGGING_ACTIVE", "true").lower() in ("true", "1", "yes")
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")

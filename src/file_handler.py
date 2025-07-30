@@ -95,15 +95,55 @@ def is_marker_valid(domain: str, max_age_hours: int = 23) -> bool:
         error(f"Error checking marker validity for {domain}: {e}")
         return False # Fail safe
 
-def delete_all_markers():
-    """Deletes all expiry check marker files from the configured directory."""
-    info("Starting: Delete Expiry Markers")
+def delete_one_marker(marker_filename: str) -> bool: # <-- Type hint fix
+    """
+    Deletes a single marker file by its full filename.
+    Returns True if deleted, False if not found or error.
+    """
+    marker_file = Path(config.MARKER_DIR) / marker_filename
+    if not marker_file.exists():
+        debug(f"Marker file '{marker_file}' does not exist, cannot delete.")
+        return False
+    try:
+        marker_file.unlink()
+        info(f"  - Deleted marker file: {marker_file}")
+        return True
+    except OSError as e:
+        error(f"  ✗ Could not delete marker file '{marker_file}': {e}")
+        return False
+
+def delete_markers_for_domain(domain: str) -> int:
+    """Deletes all marker types for a specific domain. Returns count of deleted files."""
+    info(f"Searching for markers for domain '{domain}'...")
+    deleted_count = 0
+    # Try to delete both potential marker types
+    if delete_one_marker(f"status_check_{domain}"):
+        deleted_count += 1
+    if delete_one_marker(f"expiry_check_{domain}"):
+        deleted_count += 1
+    return deleted_count
+
+def delete_markers_by_type(marker_type: str) -> int:
+    """Deletes all markers of a specific type ('status' or 'expiry'). Returns count."""
+    info(f"Searching for all '{marker_type}' type markers...")
+    deleted_count = 0
+    marker_dir = Path(config.MARKER_DIR)
+    if not marker_dir.is_dir():
+        return 0 # Nothing to do
+
+    for marker_file in marker_dir.glob(f"{marker_type}_check_*"):
+        if delete_one_marker(marker_file.name):
+            deleted_count += 1
+    return deleted_count
+
+def delete_all_markers() -> int:
+    """Deletes all marker files from the configured directory."""
     deleted_count = 0
     marker_dir = Path(config.MARKER_DIR)
 
     if not marker_dir.is_dir():
         info(f"Marker directory '{marker_dir}' does not exist. Nothing to delete.")
-        return
+        return 0
 
     try:
         for file_path in marker_dir.glob("expiry_check_*"):
@@ -119,7 +159,8 @@ def delete_all_markers():
     if deleted_count == 0:
         info(f"No marker files found in {marker_dir}.")
 
-    info("Finished: Delete Expiry Markers")
+    # return the count of deleted markers for potential use
+    return deleted_count
 
 def rewrite_domain_file(processed_entries, new_entries=None):
     """

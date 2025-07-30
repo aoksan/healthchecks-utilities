@@ -1,7 +1,7 @@
 # domain_checker/commands.py
 from . import file_handler
 from .logger import info, debug, error, warn
-from .actions import check, list as list_actions, remove as remove_actions, create as create_actions, sync as sync_actions
+from .actions import check as check_actions, list as list_actions, remove as remove_actions, create as create_actions, sync as sync_actions
 
 # --- High-Level Command Functions ---
 
@@ -15,9 +15,9 @@ def action_check_domains():
     for domain_data in domains:
         info(f"--- Processing {domain_data['domain']} ---")
         if domain_data.get('status_uuid'):
-            check.check_domain_status(domain_data['domain'], domain_data['status_uuid'])
+            check_actions.check_domain_status(domain_data['domain'], domain_data['status_uuid'])
         if domain_data.get('expiry_uuid'):
-            check.check_domain_expiry(domain_data['domain'], domain_data['expiry_uuid'])
+            check_actions.check_domain_expiry(domain_data['domain'], domain_data['expiry_uuid'])
     info("Finished: Check Domains")
 
 def action_create(args):
@@ -52,4 +52,4 @@ def action_sync_file():
 # Pass-through functions for simple commands
 action_list_checks = list_actions.list_api_checks
 action_list_domains = list_actions.list_file_domains
-action_delete_markers = remove_actions.delete_markers
+action_delete_marker = remove_actions.delete_marker
