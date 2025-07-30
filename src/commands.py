@@ -1,10 +1,12 @@
 # domain_checker/commands.py
 from . import file_handler
 from .logger import info, debug, error, warn
+from .utils import time_it  # <-- 1. Import the decorator
 from .actions import check as check_actions, list as list_actions, remove as remove_actions, create as create_actions, sync as sync_actions
 
 # --- High-Level Command Functions ---
 
+@time_it
 def action_check_domains():
     """High-level command to check all configured domains."""
     info("Starting: Check Domains")
