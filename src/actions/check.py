@@ -27,8 +27,7 @@ def check_domain_expiry(domain, expiry_uuid):
 
     if file_handler.is_marker_valid(domain):
         info(f"  ✓ Valid marker found for {domain}. Skipping full expiry check.")
-        api_client.ping_check(expiry_uuid) # Send a simple success ping to keep the check alive
-        return # Exit the function early
+        return
 
     # --- 1. Determine Expiry Date ---
     expiry_date, source = None, "unknown"
