@@ -1,8 +1,11 @@
 # domain_checker/file_handler.py
 import os
 import re
+import json
+from pathlib import Path
+from datetime import datetime, timedelta, timezone # <-- Add datetime imports
 from . import config
-from .logger import info, warn, error
+from .logger import info, warn, error, debug
 
 def load_domains_raw():
     """Loads raw lines and comments/blanks from the domain file."""
@@ -52,6 +55,71 @@ def load_domains():
     except IOError as e:
         error(f"Could not read domains file '{config.DOMAIN_FILE}': {e}")
     return domains
+
+def create_expiry_marker(domain: str):
+    """Creates an empty marker file to indicate a recent expiry check."""
+    try:
+        marker_dir = Path(config.MARKER_DIR)
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker_file = marker_dir / f"expiry_check_{domain}"
+        marker_file.touch() # Creates or updates the file's timestamp
+        debug(f"Created/updated expiry marker for {domain} at {marker_file}")
+    except Exception as e:
+        error(f"Failed to create expiry marker for {domain}: {e}")
+
+def is_marker_valid(domain: str, max_age_hours: int = 23) -> bool:
+    """
+    Checks if a recent, valid marker file exists for the domain.
+    A marker is valid if it exists and is newer than max_age_hours.
+    It automatically deletes stale markers.
+    """
+    try:
+        marker_file = Path(config.MARKER_DIR) / f"expiry_check_{domain}"
+
+        if not marker_file.exists():
+            return False # No marker, so it's not valid.
+
+        # Check the file's age
+        file_mod_time = datetime.fromtimestamp(marker_file.stat().st_mtime, tz=timezone.utc)
+        calculated_age = datetime.now(timezone.utc) - file_mod_time
+        debug(f"Marker for {domain} last modified at {file_mod_time}, age: {calculated_age}")
+        if calculated_age < timedelta(hours=max_age_hours):
+            return True # Marker exists and is recent.
+        else:
+            # Marker is old (stale), so delete it and report as invalid
+            debug(f"Marker past {max_age_hours} hours for {file_mod_time} found for {domain}. Deleting it.")
+            marker_file.unlink()
+            return False
+
+    except Exception as e:
+        error(f"Error checking marker validity for {domain}: {e}")
+        return False # Fail safe
+
+def delete_all_markers():
+    """Deletes all expiry check marker files from the configured directory."""
+    info("Starting: Delete Expiry Markers")
+    deleted_count = 0
+    marker_dir = Path(config.MARKER_DIR)
+
+    if not marker_dir.is_dir():
+        info(f"Marker directory '{marker_dir}' does not exist. Nothing to delete.")
+        return
+
+    try:
+        for file_path in marker_dir.glob("expiry_check_*"):
+            try:
+                file_path.unlink()
+                info(f"  - Deleted marker: {file_path}")
+                deleted_count += 1
+            except OSError as e:
+                error(f"Could not delete marker file '{file_path}': {e}")
+    except OSError as e:
+        error(f"Could not list files in marker directory '{marker_dir}': {e}")
+
+    if deleted_count == 0:
+        info(f"No marker files found in {marker_dir}.")
+
+    info("Finished: Delete Expiry Markers")
 
 def rewrite_domain_file(processed_entries, new_entries=None):
     """

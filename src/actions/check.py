@@ -1,7 +1,7 @@
 # domain_checker/actions/check.py
 import datetime
 import requests
-from .. import api_client, services
+from .. import api_client, services, file_handler
 from ..logger import info, debug, error, warn
 
 def check_domain_status(domain, status_uuid):
@@ -25,6 +25,11 @@ def check_domain_expiry(domain, expiry_uuid):
     """Checks domain expiry, pings the healthcheck, and updates status tags."""
     info(f"Checking expiry for {domain}...")
 
+    if file_handler.is_marker_valid(domain):
+        info(f"  ✓ Valid marker found for {domain}. Skipping full expiry check.")
+        api_client.ping_check(expiry_uuid) # Send a simple success ping to keep the check alive
+        return # Exit the function early
+
     # --- 1. Determine Expiry Date ---
     expiry_date, source = None, "unknown"
     if domain.count('.') > 1:
@@ -43,6 +48,8 @@ def check_domain_expiry(domain, expiry_uuid):
         if expiry_date_godaddy:
             expiry_date = expiry_date_godaddy
             source = "GoDaddy API"
+
+    file_handler.create_expiry_marker(domain)
 
     # --- 2. Calculate Status and Desired Tag ---
     desired_tag = None
@@ -95,5 +102,5 @@ def check_domain_expiry(domain, expiry_uuid):
     # Preserve any tags that are not part of our managed set
     new_tags = [tag for tag in current_tags if tag not in MANAGED_EXPIRY_TAGS]
     new_tags.append(desired_tag)
-
+    debug(f"Updating tags for {domain}: {new_tags}")
     api_client.update_check_tags(expiry_uuid, new_tags)
