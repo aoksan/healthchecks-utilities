@@ -7,4 +7,4 @@ assignees: ''
 
 ---
 
-**Which registrar should be supported?** If available provide information about API documentation.
+**Which registrar should be supported?** (If available provide API documentation)
