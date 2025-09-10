@@ -48,6 +48,11 @@ def main():
     # Command: check
     check_parser = subparsers.add_parser('check', help='Check status/expiry for all configured domains.')
     check_parser.set_defaults(func=commands.action_check_domains)
+    check_parser.add_argument(
+        '--force-update-tags',
+        action='store_true',
+        help='Force the script to update tags on the API, even if they appear to be correct.'
+    )
 
     # Command: remove
     remove_parser = subparsers.add_parser('remove', help='Remove checks from API and/or file.')

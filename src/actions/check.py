@@ -36,7 +36,7 @@ LOOKUP_FAILED_TAG = 'lookup_failed'
 # This ensures the list is always in sync with the logic.
 MANAGED_EXPIRY_TAGS = [tag for _, tag in EXPIRY_LEVELS] + [OK_TAG, LOOKUP_FAILED_TAG]
 
-def check_domain_expiry(domain, expiry_uuid):
+def check_domain_expiry(domain, expiry_uuid, force_tag_update=False):
     """Checks domain expiry, pings the healthcheck, and updates status tags."""
     info(f"Checking expiry for {domain}...")
 
@@ -109,14 +109,21 @@ def check_domain_expiry(domain, expiry_uuid):
         error(f"Could not fetch details for check {expiry_uuid} to update tags.")
         return
 
+    # Note: .split() on an empty string or whitespace returns an empty list.
     current_tags = check_details.get('tags', '').split()
 
-    if desired_tag in current_tags:
+    if current_tags:
+        debug(f"Current tags of {domain}: {current_tags}")
+    else:
+        debug(f"No tags exists for {domain}")
+
+    if desired_tag in current_tags and not force_tag_update:
         debug(f"Tag '{desired_tag}' is already present for {domain}. No update needed.")
         return
 
     # Preserve any tags that are not part of our managed set
     new_tags = [tag for tag in current_tags if tag not in MANAGED_EXPIRY_TAGS]
     new_tags.append(desired_tag)
-    debug(f"Updating tags for {domain}: {new_tags}")
+    log_action = "Updating" if current_tags else "Adding"
+    debug(f"{log_action} tags for {domain}: {new_tags}")
     api_client.update_check_tags(expiry_uuid, new_tags)

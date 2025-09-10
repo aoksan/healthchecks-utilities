@@ -7,9 +7,12 @@ from .actions import check as check_actions, list as list_actions, remove as rem
 # --- High-Level Command Functions ---
 
 @time_it
-def action_check_domains():
+def action_check_domains(args):
     """High-level command to check all configured domains."""
     info("Starting: Check Domains")
+    if args.force_update_tags:
+        info("Note: --force-update-tags flag is active. Tags will be updated regardless of current state.")
+
     domains = file_handler.load_domains()
     if not domains:
         warn("No valid domains loaded to check.")
@@ -19,7 +22,7 @@ def action_check_domains():
         if domain_data.get('status_uuid'):
             check_actions.check_domain_status(domain_data['domain'], domain_data['status_uuid'])
         if domain_data.get('expiry_uuid'):
-            check_actions.check_domain_expiry(domain_data['domain'], domain_data['expiry_uuid'])
+            check_actions.check_domain_expiry(domain_data['domain'], domain_data['expiry_uuid'], args.force_update_tags)
     info("Finished: Check Domains")
 
 def action_create(args):
