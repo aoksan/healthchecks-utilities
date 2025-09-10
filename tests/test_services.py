@@ -1,4 +1,3 @@
-# tests/test_services.py
 import pytest
 from datetime import datetime, timedelta, timezone
 from healthchecks_utilities import services, api_client # type: ignore
@@ -87,7 +86,8 @@ def test_parse_expiry_from_whois(whois_text, expected_datetime_str):
 @pytest.mark.parametrize("days_from_now, expected_tag, expected_ping_suffix, expected_status_in_payload", [
     (5, 'expires_in_<7d', '/fail', 'status=expiring_soon'),
     (15, 'expires_in_<30d', '', 'status=expiring_soon'),
-    (60, 'expires_in_<90d', '', 'status=expiring_soon'),
+    (49, 'expires_in_<60d', '', 'status=expiring_soon'),
+    (74, 'expires_in_<90d', '', 'status=expiring_soon'),
     (100, 'expiry_ok', '', 'status=ok'),
     (-2, 'expired', '/fail', 'status=expired'),
 ])
@@ -101,7 +101,6 @@ def test_check_domain_expiry_scenarios(
     domain = "example.com"
     expiry_uuid = "test-expiry-uuid"
 
-    # --- THE FIX ---
     # 1. Define the fixed point in time.
     FROZEN_TIME = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -118,7 +117,6 @@ def test_check_domain_expiry_scenarios(
     #    the mocked datetime object doesn't know about timedelta.
     mock_dt.timedelta = timedelta
     mock_dt.timezone = timezone
-    # --- END FIX ---
 
     # Calculate the expiry date relative to our fixed time.
     expiry_date = FROZEN_TIME + timedelta(days=days_from_now)
@@ -129,6 +127,7 @@ def test_check_domain_expiry_scenarios(
         return_value=f"Registry Expiry Date: {expiry_date.strftime('%Y-%m-%dT%H:%M:%SZ')}"
     )
     mocker.patch.object(services, "_get_expiry_from_godaddy", return_value=None)
+    mocker.patch('healthchecks_utilities.actions.check.file_handler.is_marker_valid', return_value=False)
     mock_ping = mocker.patch.object(api_client, "ping_check")
     mock_get_details = mocker.patch.object(
         api_client, "get_check_details",

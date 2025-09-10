@@ -19,7 +19,22 @@ def check_domain_status(domain, status_uuid):
         api_client.ping_check(status_uuid, "/fail", payload=f"status=error_{type(e).__name__}")
         error(f"  ✗ Status check failed for {domain}: {e}")
 
-MANAGED_EXPIRY_TAGS = ['expiry_ok', 'expires_in_<30d', 'expires_in_<7d', 'expired', 'lookup_failed']
+# The list is ordered from most urgent (lowest day count) to least.
+# Each tuple contains: (day_threshold, tag_string)
+EXPIRY_LEVELS = [
+    (0, 'expired'),
+    (7, 'expires_in_<7d'),
+    (30, 'expires_in_<30d'),
+    (60, 'expires_in_<60d'),
+    (90, 'expires_in_<90d'),
+]
+# Define standard tags for non-threshold states.
+OK_TAG = 'expiry_ok'
+LOOKUP_FAILED_TAG = 'lookup_failed'
+
+# --- 2. Derive the list of all managed tags directly from the definitions above. ---
+# This ensures the list is always in sync with the logic.
+MANAGED_EXPIRY_TAGS = [tag for _, tag in EXPIRY_LEVELS] + [OK_TAG, LOOKUP_FAILED_TAG]
 
 def check_domain_expiry(domain, expiry_uuid):
     """Checks domain expiry, pings the healthcheck, and updates status tags."""
@@ -58,32 +73,34 @@ def check_domain_expiry(domain, expiry_uuid):
         info(f"  ✓ Found Expiry Date via {source}: {expiry_date.strftime('%Y-%m-%d')}")
         days_left = (expiry_date - datetime.datetime.now(datetime.timezone.utc)).days
 
-        if days_left <= 0:
-            desired_tag = 'expired'
+        # --- 3. Determine the correct tag by iterating through the defined levels. ---
+        for threshold, tag in EXPIRY_LEVELS:
+            if days_left <= threshold:
+                desired_tag = tag
+                break
+
+        if desired_tag is None:
+            desired_tag = OK_TAG
+
+        # --- 4. Handle logging and pinging based on the determined tag. ---
+        if desired_tag == 'expired':
             warn(f"  ✗ Domain {domain} has expired! ({abs(days_left)} days ago)")
             api_client.ping_check(expiry_uuid + "/fail", payload=f"status=expired&days_left={days_left}")
-        elif days_left <= 7:
-            desired_tag = 'expires_in_<7d'
+        elif desired_tag == 'expires_in_<7d':
             warn(f"  ⚠ Domain {domain} expires very soon! ({days_left} days)")
             api_client.ping_check(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={days_left}")
-        elif days_left <= 30:
-            desired_tag = 'expires_in_<30d'
+        elif desired_tag in ['expires_in_<30d', 'expires_in_<60d', 'expires_in_<90d']:
             warn(f"  ⚠ Domain {domain} expires soon! ({days_left} days)")
             api_client.ping_check(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
-        elif days_left <= 90:
-            desired_tag = 'expires_in_<90d'
-            warn(f"  ⚠ Domain {domain} expires soon! ({days_left} days)")
-            api_client.ping_check(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
-        else:
-            desired_tag = 'expiry_ok'
+        else: # This covers OK_TAG
             info(f"  ✓ Domain {domain} expiry is OK ({days_left} days remaining).")
             api_client.ping_check(expiry_uuid, payload=f"status=ok&days_left={days_left}")
     else:
-        desired_tag = 'lookup_failed'
+        desired_tag = LOOKUP_FAILED_TAG
         error(f"  ✗ Failed to determine expiry date for {domain}.")
         api_client.ping_check(expiry_uuid + "/fail", payload="status=lookup_failed")
 
-    # --- 3. Update Tags if Necessary ---
+    # --- Update Tags if Necessary ---
     if not desired_tag:
         return # Should not happen, but a safeguard.
 
