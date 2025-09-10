@@ -119,7 +119,7 @@ def main():
 
     # Dispatch to the function set by set_defaults()
     # Pass the 'args' object to commands that need to inspect them further.
-    if args.command in ['create', 'remove', 'delete-markers']:
+    if args.command in ['create', 'check', 'remove', 'delete-markers']:
         args.func(args)
     else:
         # For simple commands that don't need arguments
