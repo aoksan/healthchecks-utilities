@@ -158,3 +158,49 @@ def test_check_domain_expiry_scenarios(
     updated_tags = mock_update_tags.call_args[0][1]
     assert expected_tag in updated_tags
     assert "some_other_tag" in updated_tags
+
+# 3. Test the expiry check tag updates
+@pytest.mark.parametrize(
+    "force_update_flag, existing_tags_str, expected_call_count",
+    [
+        pytest.param(False, '', 1, id="ADD_if_no_tags_exist"),
+        pytest.param(False, 'expiry_ok', 0, id="SKIP_update_tags_correct_and_not_forced"),
+        pytest.param(True, 'expiry_ok', 1, id="FORCE_update_tags_correct_but_forced"),
+        pytest.param(False, 'expires_in_<30d', 1, id="UPDATE_tags_incorrect_and_not_forced"),
+        pytest.param(True, 'expires_in_<30d', 1, id="UPDATE_tags_incorrect_and_forced"),
+    ]
+)
+def test_check_domain_expiry_force_update_logic(
+    mocker, force_update_flag, existing_tags_str, expected_call_count
+):
+    """
+    Verifies that the tag update logic is correctly skipped or forced based on
+    the `force_update` flag and the current state of the tags.
+    """
+    # --- Arrange ---
+    # We set up a scenario where the domain expiry is always "OK" (more than 90 days).
+    # This isolates the test to focus only on the tag comparison logic.
+    domain = "example.com"
+    expiry_uuid = "test-expiry-uuid"
+    expiry_date_far_future = datetime.now(timezone.utc) + timedelta(days=200)
+
+    # Mock all external dependencies to create a predictable environment
+    mocker.patch('healthchecks_utilities.actions.check.file_handler.is_marker_valid', return_value=False)
+    mocker.patch.object(services, "run_whois", return_value=f"Registry Expiry Date: {expiry_date_far_future.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    mocker.patch.object(services, "_get_expiry_from_godaddy", return_value=None)
+    mocker.patch.object(api_client, "ping_check") # We don't care about ping for this test
+
+    # This is the key mock: we control what tags the script thinks are on the server
+    mocker.patch.object(
+        api_client, "get_check_details",
+        return_value={'uuid': expiry_uuid, 'tags': existing_tags_str}
+    )
+    # This is the function we will assert against
+    mock_update_tags = mocker.patch.object(api_client, "update_check_tags")
+
+    # --- Act ---
+    check.check_domain_expiry(domain, expiry_uuid, force_update_flag)
+
+    # --- Assert ---
+    # Verify that `update_check_tags` was called the expected number of times
+    assert mock_update_tags.call_count == expected_call_count
