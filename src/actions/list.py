@@ -1,6 +1,6 @@
-# domain_checker/actions/list.py
 from .. import api_client, file_handler, config
 from ..logger import info
+
 
 def list_api_checks():
     """Lists all healthchecks found via the API."""
@@ -10,9 +10,12 @@ def list_api_checks():
         info("No healthchecks found on the account.")
         return
     info(f"Found {len(all_checks)} Healthchecks:")
-    for check in sorted(all_checks, key=lambda x: x.get('name', '').lower()):
-        info(f"  - Name: {check.get('name', 'N/A'):<30} UUID: {check['uuid']} Status: {check.get('status','N/A')}")
+    for check in sorted(all_checks, key=lambda x: x.get("name", "").lower()):
+        info(
+            f"  - Name: {check.get('name', 'N/A'):<30} UUID: {check['uuid']} Status: {check.get('status','N/A')}"
+        )
     info("Finished: List Checks from API")
+
 
 def list_file_domains():
     """Lists domains configured in the local file."""

@@ -1,46 +1,69 @@
 # Makefile for healthchecks-utilities
+# Supported platforms: Linux, macOS, Windows
+# Requires: make, uv
 
-# Use the user's default shell, defaulting to bash
-SHELL := /bin/bash
+.PHONY: help install source lint test clean
 
-.PHONY: help lint test clean install source
+# Detect Windows vs Unix
+ifeq ($(OS),Windows_NT)
+    PLATFORM := windows
+else
+    PLATFORM := unix
+endif
 
 help:
 	@echo "Available commands:"
-	@echo "  make install   - Create a virtual environment and install dependencies using Rye"
-	@echo "  make source    - Spawn a new shell with the virtual environment activated"
-	@echo "  make lint      - Run the linter on the source code using Rye"
-	@echo "  make test      - Run the unit tests using Rye"
-	@echo "  make clean     - Clean up temporary files and caches"
+	@echo "  make install   - Create/update the virtual environment and install dependencies using uv"
+	@echo "  make source    - Activate the virtual environment"
+	@echo "  make lint      - Run the linter"
+	@echo "  make test      - Run the unit tests"
+	@echo "  make clean     - Clean temporary files and caches"
 
 install:
-	@echo "Setting up project with Rye and installing dependencies..."
-	@command -v rye >/dev/null 2>&1 || { echo >&2 "Rye is not installed. Please install it first: https://rye-up.com/guide/installation/"; exit 1; }
-	@rye sync
+	@echo "Setting up project with uv..."
+	@uv sync --link-mode=copy
 	@echo "Project setup complete."
-	@echo "To activate the environment, you can now run 'make source' or 'source .venv/bin/activate'."
+
+# ---------------------------------------------------------
+# Windows-specific commands
+# ---------------------------------------------------------
+ifeq ($(PLATFORM),windows)
 
 source:
-	@if [ -f ".venv/bin/activate" ]; then \
-		echo "Spawning a new shell with the virtual environment activated."; \
-		echo "Type 'exit' to return to your original shell."; \
-		$(SHELL) -c "source .venv/bin/activate && exec $(SHELL)"; \
-	else \
-		echo "Virtual environment not found. Please run 'make install' first."; \
-		exit 1; \
-	fi
-
-lint:
-	@echo "Running linter with Rye..."
-	@rye run flake8 src
-
-test:
-	@echo "Running tests with Rye..."
-	@rye run pytest -s
+	@echo "To activate the virtual environment in PowerShell, run:"
+	@echo ".venv\Scripts\Activate.ps1"
+	@echo ""
+	@echo "Or in Command Prompt:"
+	@echo ".venv\Scripts\activate.bat"
 
 clean:
-	@echo "Cleaning up..."
-	find . -type f -name "*.pyc" -delete
-	find . -type d -name "__pycache__" -delete
-	rm -rf .pytest_cache build dist *.egg-info .venv .rye requirements*.lock
-	@echo "Cleanup complete."
+	@echo "Cleaning up Windows environments..."
+	@powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -Recurse -Force .pytest_cache,build,dist,.venv -ErrorAction SilentlyContinue; Get-ChildItem -Recurse -Filter '*.pyc' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; Get-ChildItem -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
+	@echo "Clean up complete."
+
+# ---------------------------------------------------------
+# Unix/macOS-specific commands
+# ---------------------------------------------------------
+else
+
+source:
+	@echo "Activating virtual environment..."
+	@bash -c 'source .venv/bin/activate && exec bash'
+
+clean:
+	@echo "Cleaning up Unix environments..."
+	@find . -type f -name "*.pyc" -delete
+	@find . -type d -name "__pycache__" -delete
+	@rm -rf .pytest_cache build dist .venv *.egg-info
+	@echo "Clean up complete."
+
+endif
+# ---------------------------------------------------------
+
+lint:
+	@echo "Running linter..."
+	@uv run flake8 src
+
+test:
+	@echo "Running tests..."
+	@uv run pytest -s

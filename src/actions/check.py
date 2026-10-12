@@ -1,40 +1,52 @@
-# domain_checker/actions/check.py
 import datetime
 import requests
 from .. import api_client, services, file_handler
 from ..logger import info, debug, error, warn
 
+
 def check_domain_status(domain, status_uuid):
     """Checks website status and pings the status healthcheck."""
     info(f"Checking status for {domain}...")
     try:
-        response = requests.get(f"https://{domain}", timeout=10, allow_redirects=True, verify=True, headers={'User-Agent': 'domain-hc-script/1.0'})
+        response = requests.get(
+            f"https://{domain}",
+            timeout=10,
+            allow_redirects=True,
+            verify=True,
+            headers={"User-Agent": "domain-hc-script/1.0"},
+        )
         if 200 <= response.status_code < 400:
             api_client.ping_check(status_uuid)
             info(f"  ✓ Status: up (HTTP {response.status_code}) for {domain}")
         else:
-            api_client.ping_check(status_uuid, "/fail", payload=f"status={response.status_code}")
+            api_client.ping_check(
+                status_uuid, "/fail", payload=f"status={response.status_code}"
+            )
             error(f"  ✗ Status: down/error (HTTP {response.status_code}) for {domain}")
     except requests.exceptions.RequestException as e:
-        api_client.ping_check(status_uuid, "/fail", payload=f"status=error_{type(e).__name__}")
+        api_client.ping_check(
+            status_uuid, "/fail", payload=f"status=error_{type(e).__name__}"
+        )
         error(f"  ✗ Status check failed for {domain}: {e}")
+
 
 # The list is ordered from most urgent (lowest day count) to least.
 # Each tuple contains: (day_threshold, tag_string)
 EXPIRY_LEVELS = [
-    (0, 'expired'),
-    (7, 'expires_in_<7d'),
-    (30, 'expires_in_<30d'),
-    (60, 'expires_in_<60d'),
-    (90, 'expires_in_<90d'),
+    (0, "expired"),
+    (7, "expires_in_<7d"),
+    (30, "expires_in_<30d"),
+    (60, "expires_in_<60d"),
+    (90, "expires_in_<90d"),
 ]
 # Define standard tags for non-threshold states.
-OK_TAG = 'expiry_ok'
-LOOKUP_FAILED_TAG = 'lookup_failed'
+OK_TAG = "expiry_ok"
+LOOKUP_FAILED_TAG = "lookup_failed"
 
 # --- 2. Derive the list of all managed tags directly from the definitions above. ---
 # This ensures the list is always in sync with the logic.
 MANAGED_EXPIRY_TAGS = [tag for _, tag in EXPIRY_LEVELS] + [OK_TAG, LOOKUP_FAILED_TAG]
+
 
 def check_domain_expiry(domain, expiry_uuid, force_tag_update=False):
     """Checks domain expiry, pings the healthcheck, and updates status tags."""
@@ -46,7 +58,7 @@ def check_domain_expiry(domain, expiry_uuid, force_tag_update=False):
 
     # --- 1. Determine Expiry Date ---
     expiry_date, source = None, "unknown"
-    if domain.count('.') > 1:
+    if domain.count(".") > 1:
         info(f"  ↪ Skipping WHOIS/API lookup for apparent subdomain: {domain}")
         api_client.ping_check(expiry_uuid, payload="status=skipped_subdomain")
         # Optional: You could also add a 'subdomain' tag here
@@ -55,7 +67,8 @@ def check_domain_expiry(domain, expiry_uuid, force_tag_update=False):
     whois_output = services.run_whois(domain)
     if whois_output:
         expiry_date = services._parse_expiry_from_whois(whois_output)
-        if expiry_date: source = "WHOIS"
+        if expiry_date:
+            source = "WHOIS"
 
     if not expiry_date:
         expiry_date_godaddy = services._get_expiry_from_godaddy(domain)
@@ -83,18 +96,27 @@ def check_domain_expiry(domain, expiry_uuid, force_tag_update=False):
             desired_tag = OK_TAG
 
         # --- 4. Handle logging and pinging based on the determined tag. ---
-        if desired_tag == 'expired':
+        if desired_tag == "expired":
             warn(f"  ✗ Domain {domain} has expired! ({abs(days_left)} days ago)")
-            api_client.ping_check(expiry_uuid + "/fail", payload=f"status=expired&days_left={days_left}")
-        elif desired_tag == 'expires_in_<7d':
+            api_client.ping_check(
+                expiry_uuid + "/fail", payload=f"status=expired&days_left={days_left}"
+            )
+        elif desired_tag == "expires_in_<7d":
             warn(f"  ⚠ Domain {domain} expires very soon! ({days_left} days)")
-            api_client.ping_check(expiry_uuid + "/fail", payload=f"status=expiring_soon&days_left={days_left}")
-        elif desired_tag in ['expires_in_<30d', 'expires_in_<60d', 'expires_in_<90d']:
+            api_client.ping_check(
+                expiry_uuid + "/fail",
+                payload=f"status=expiring_soon&days_left={days_left}",
+            )
+        elif desired_tag in ["expires_in_<30d", "expires_in_<60d", "expires_in_<90d"]:
             warn(f"  ⚠ Domain {domain} expires soon! ({days_left} days)")
-            api_client.ping_check(expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}")
-        else: # This covers OK_TAG
+            api_client.ping_check(
+                expiry_uuid, payload=f"status=expiring_soon&days_left={days_left}"
+            )
+        else:  # This covers OK_TAG
             info(f"  ✓ Domain {domain} expiry is OK ({days_left} days remaining).")
-            api_client.ping_check(expiry_uuid, payload=f"status=ok&days_left={days_left}")
+            api_client.ping_check(
+                expiry_uuid, payload=f"status=ok&days_left={days_left}"
+            )
     else:
         desired_tag = LOOKUP_FAILED_TAG
         error(f"  ✗ Failed to determine expiry date for {domain}.")
@@ -102,7 +124,7 @@ def check_domain_expiry(domain, expiry_uuid, force_tag_update=False):
 
     # --- Update Tags if Necessary ---
     if not desired_tag:
-        return # Should not happen, but a safeguard.
+        return  # Should not happen, but a safeguard.
 
     check_details = api_client.get_check_details(expiry_uuid)
     if not check_details:
@@ -110,7 +132,7 @@ def check_domain_expiry(domain, expiry_uuid, force_tag_update=False):
         return
 
     # Note: .split() on an empty string or whitespace returns an empty list.
-    current_tags = check_details.get('tags', '').split()
+    current_tags = check_details.get("tags", "").split()
 
     if current_tags:
         debug(f"Current tags of {domain}: {current_tags}")

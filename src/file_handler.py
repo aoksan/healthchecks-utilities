@@ -1,24 +1,25 @@
-# domain_checker/file_handler.py
 import os
 import re
 import json
 from pathlib import Path
-from datetime import datetime, timedelta, timezone # <-- Add datetime imports
+from datetime import datetime, timedelta, timezone  # <-- Add datetime imports
 from . import config
 from .logger import info, warn, error, debug
+
 
 def load_domains_raw():
     """Loads raw lines and comments/blanks from the domain file."""
     lines_data = []
     try:
-        with open(config.DOMAIN_FILE, 'r') as f:
+        with open(config.DOMAIN_FILE, "r") as f:
             for idx, line in enumerate(f):
-                lines_data.append({'line_num': idx + 1, 'raw_line': line.strip()})
+                lines_data.append({"line_num": idx + 1, "raw_line": line.strip()})
     except FileNotFoundError:
         warn(f"Domains file '{config.DOMAIN_FILE}' not found.")
     except IOError as e:
         error(f"Could not read domains file '{config.DOMAIN_FILE}': {e}")
     return lines_data
+
 
 def load_domains():
     """
@@ -27,11 +28,11 @@ def load_domains():
     """
     domains = []
     try:
-        with open(config.DOMAIN_FILE, 'r') as f:
+        with open(config.DOMAIN_FILE, "r") as f:
             for idx, line in enumerate(f):
                 line_num = idx + 1
                 line = line.strip()
-                if not line or line.startswith('#'):
+                if not line or line.startswith("#"):
                     continue
 
                 parts = line.split()
@@ -39,22 +40,29 @@ def load_domains():
                 status_uuid, expiry_uuid = None, None
 
                 for part in parts[1:]:
-                    if part.startswith('s:'): status_uuid = part.split(':', 1)[1]
-                    elif part.startswith('e:'): expiry_uuid = part.split(':', 1)[1]
+                    if part.startswith("s:"):
+                        status_uuid = part.split(":", 1)[1]
+                    elif part.startswith("e:"):
+                        expiry_uuid = part.split(":", 1)[1]
 
                 if domain and (status_uuid or expiry_uuid):
-                    domains.append({
-                        'domain': domain,
-                        'status_uuid': status_uuid or "",
-                        'expiry_uuid': expiry_uuid or ""
-                    })
+                    domains.append(
+                        {
+                            "domain": domain,
+                            "status_uuid": status_uuid or "",
+                            "expiry_uuid": expiry_uuid or "",
+                        }
+                    )
                 else:
-                    warn(f"Skipping invalid line {line_num}: '{line}' in {config.DOMAIN_FILE}.")
+                    warn(
+                        f"Skipping invalid line {line_num}: '{line}' in {config.DOMAIN_FILE}."
+                    )
     except FileNotFoundError:
         warn(f"Domains file '{config.DOMAIN_FILE}' not found. No domains loaded.")
     except IOError as e:
         error(f"Could not read domains file '{config.DOMAIN_FILE}': {e}")
     return domains
+
 
 def create_expiry_marker(domain: str):
     """Creates an empty marker file to indicate a recent expiry check."""
@@ -62,10 +70,11 @@ def create_expiry_marker(domain: str):
         marker_dir = Path(config.MARKER_DIR)
         marker_dir.mkdir(parents=True, exist_ok=True)
         marker_file = marker_dir / f"expiry_check_{domain}"
-        marker_file.touch() # Creates or updates the file's timestamp
+        marker_file.touch()  # Creates or updates the file's timestamp
         debug(f"Created/updated expiry marker for {domain} at {marker_file}")
     except Exception as e:
         error(f"Failed to create expiry marker for {domain}: {e}")
+
 
 def is_marker_valid(domain: str, max_age_hours: int = 23) -> bool:
     """
@@ -77,25 +86,32 @@ def is_marker_valid(domain: str, max_age_hours: int = 23) -> bool:
         marker_file = Path(config.MARKER_DIR) / f"expiry_check_{domain}"
 
         if not marker_file.exists():
-            return False # No marker, so it's not valid.
+            return False  # No marker, so it's not valid.
 
         # Check the file's age
-        file_mod_time = datetime.fromtimestamp(marker_file.stat().st_mtime, tz=timezone.utc)
+        file_mod_time = datetime.fromtimestamp(
+            marker_file.stat().st_mtime, tz=timezone.utc
+        )
         calculated_age = datetime.now(timezone.utc) - file_mod_time
-        debug(f"Marker for {domain} last modified at {file_mod_time}, age: {calculated_age}")
+        debug(
+            f"Marker for {domain} last modified at {file_mod_time}, age: {calculated_age}"
+        )
         if calculated_age < timedelta(hours=max_age_hours):
-            return True # Marker exists and is recent.
+            return True  # Marker exists and is recent.
         else:
             # Marker is old (stale), so delete it and report as invalid
-            debug(f"Marker past {max_age_hours} hours for {file_mod_time} found for {domain}. Deleting it.")
+            debug(
+                f"Marker past {max_age_hours} hours for {file_mod_time} found for {domain}. Deleting it."
+            )
             marker_file.unlink()
             return False
 
     except Exception as e:
         error(f"Error checking marker validity for {domain}: {e}")
-        return False # Fail safe
+        return False  # Fail safe
 
-def delete_one_marker(marker_filename: str) -> bool: # <-- Type hint fix
+
+def delete_one_marker(marker_filename: str) -> bool:  # <-- Type hint fix
     """
     Deletes a single marker file by its full filename.
     Returns True if deleted, False if not found or error.
@@ -112,6 +128,7 @@ def delete_one_marker(marker_filename: str) -> bool: # <-- Type hint fix
         error(f"  ✗ Could not delete marker file '{marker_file}': {e}")
         return False
 
+
 def delete_markers_for_domain(domain: str) -> int:
     """Deletes all marker types for a specific domain. Returns count of deleted files."""
     info(f"Searching for markers for domain '{domain}'...")
@@ -123,18 +140,20 @@ def delete_markers_for_domain(domain: str) -> int:
         deleted_count += 1
     return deleted_count
 
+
 def delete_markers_by_type(marker_type: str) -> int:
     """Deletes all markers of a specific type ('status' or 'expiry'). Returns count."""
     info(f"Searching for all '{marker_type}' type markers...")
     deleted_count = 0
     marker_dir = Path(config.MARKER_DIR)
     if not marker_dir.is_dir():
-        return 0 # Nothing to do
+        return 0  # Nothing to do
 
     for marker_file in marker_dir.glob(f"{marker_type}_check_*"):
         if delete_one_marker(marker_file.name):
             deleted_count += 1
     return deleted_count
+
 
 def delete_all_markers() -> int:
     """Deletes all marker files from the configured directory."""
@@ -162,6 +181,7 @@ def delete_all_markers() -> int:
     # return the count of deleted markers for potential use
     return deleted_count
 
+
 def rewrite_domain_file(processed_entries, new_entries=None):
     """
     Generic function to rewrite the domain file.
@@ -170,28 +190,34 @@ def rewrite_domain_file(processed_entries, new_entries=None):
     """
     info(f"Rewriting {config.DOMAIN_FILE}...")
     try:
-        with open(config.DOMAIN_FILE, 'w') as outfile:
+        with open(config.DOMAIN_FILE, "w") as outfile:
             # Write original/modified entries
             for entry in processed_entries:
-                if entry['type'] == 'comment_or_blank':
-                    outfile.write(entry['content'] + "\n")
-                elif entry['type'] == 'domain':
-                    line_parts = [entry['domain']]
-                    if entry.get('status_uuid'): line_parts.append(f"s:{entry['status_uuid']}")
-                    if entry.get('expiry_uuid'): line_parts.append(f"e:{entry['expiry_uuid']}")
+                if entry["type"] == "comment_or_blank":
+                    outfile.write(entry["content"] + "\n")
+                elif entry["type"] == "domain":
+                    line_parts = [entry["domain"]]
+                    if entry.get("status_uuid"):
+                        line_parts.append(f"s:{entry['status_uuid']}")
+                    if entry.get("expiry_uuid"):
+                        line_parts.append(f"e:{entry['expiry_uuid']}")
 
                     if len(line_parts) > 1:
                         outfile.write(" ".join(line_parts) + "\n")
                     else:
-                        warn(f"Skipping write for '{entry['domain']}' as it has no valid UUIDs.")
+                        warn(
+                            f"Skipping write for '{entry['domain']}' as it has no valid UUIDs."
+                        )
 
             # Append new entries if they exist
             if new_entries:
                 outfile.write("\n# --- Checks Added by Sync Command ---\n")
                 for entry in new_entries:
-                    line_parts = [entry['domain']]
-                    if entry.get('status_uuid'): line_parts.append(f"s:{entry['status_uuid']}")
-                    if entry.get('expiry_uuid'): line_parts.append(f"e:{entry['expiry_uuid']}")
+                    line_parts = [entry["domain"]]
+                    if entry.get("status_uuid"):
+                        line_parts.append(f"s:{entry['status_uuid']}")
+                    if entry.get("expiry_uuid"):
+                        line_parts.append(f"e:{entry['expiry_uuid']}")
                     outfile.write(" ".join(line_parts) + "\n")
 
         info(f"Successfully updated {config.DOMAIN_FILE}.")
